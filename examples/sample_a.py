@@ -1,6 +1,12 @@
 import math
 
 def calculate_average(numbers):
+    """
+    Calculate the average of numbers
+
+    Args:
+        numbers (TYPE): list of numbers
+    """
     
     total = 0
     for n in numbers:

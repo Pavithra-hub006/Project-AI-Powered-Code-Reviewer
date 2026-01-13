@@ -576,39 +576,6 @@ if results:
            st.markdown("## 📊 Test Execution Results (File-wise)")
            st.bar_chart(df)
            # ---------- Mentor-style single-bar graph ----------
-
-        #    EXPECTED_TEST_FILES = [
-        #        "test_coverage_reporter",
-        #        "test_dashboard",
-        #        "test_generator",
-        #        "test_llm_integration",
-        #        "test_parser",
-        #        "test_validation",
-        #    ]
-
-# Initialize all files with 0 → ensures 6 bars always
-           
-
-        #    summary = pytest_data["summary"]
-
-        #    c1, c2, c3 = st.columns(3)
-        #    c1.metric("Total", summary["total"])
-        #    c2.metric("Passed", summary["passed"])
-        #    c3.metric("Failed", summary["failed"])
-        #    file_summary = summarize_tests_by_file(pytest_data)
-        #     # Build per-file graph data
-        #    graph_data = {}
-
-        #    for file, stats in file_summary.items():
-        #        short_name = Path(file).stem.replace("test_", "")
-        #        graph_data[short_name] = {
-        #             "Passed": stats["passed"],
-        #             "Failed": stats["failed"]
-        #        }
-        #    st.markdown("## 📊 Test Results by File (Passed vs Failed)")
-
-        #    st.bar_chart(graph_data)
-
            st.markdown("### 📄 Test Results by File")
 
            rows = []
