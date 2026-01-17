@@ -1,2 +1,1 @@
 # Project-AI-Powered-Code-Reviewer
-API_KEY= "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"
