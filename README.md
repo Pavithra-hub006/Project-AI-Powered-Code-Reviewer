@@ -1,9 +1,4 @@
 # Project-AI-Powered-Code-Reviewer
-Got it 👍
-Below is a **fully rewritten, detailed, professional README.md** **generated specifically for YOUR project**, **NOT Agniva**, but **inspired by that level of completeness**.
-You can directly paste this into your repository.
-
----
 
 # AI-Powered Code Reviewer 🤖🧠
 
