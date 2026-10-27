@@ -1,0 +1,28 @@
+{
+  "files": {
+    "examples/sample_b.py": {
+      "total_items": 2,
+      "doc_count": 1,
+      "coverage_percent": 50.0,
+      "items": [
+        {
+          "type": "function",
+          "name": "generator_example",
+          "lineno": 1,
+          "has_doc": true
+        },
+        {
+          "type": "function",
+          "name": "raises_example",
+          "lineno": 7,
+          "has_doc": false
+        }
+      ]
+    }
+  },
+  "summary": {
+    "total_items": 2,
+    "total_docs": 1,
+    "coverage_percent": 50.0
+  }
+}
