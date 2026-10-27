@@ -1,6 +1,38 @@
 {
   "files": {
-    "examples/sample_b.py": {
+    "C:\\Users\\pavit\\OneDrive\\Desktop\\AI_Powered_chatbot\\examples\\sample_a.py": {
+      "total_items": 4,
+      "doc_count": 1,
+      "coverage_percent": 25.0,
+      "items": [
+        {
+          "type": "function",
+          "name": "calculate_average",
+          "lineno": 3,
+          "has_doc": false
+        },
+        {
+          "type": "function",
+          "name": "add",
+          "lineno": 13,
+          "has_doc": true
+        },
+        {
+          "type": "class",
+          "name": "Processor",
+          "lineno": 18,
+          "has_doc": false
+        },
+        {
+          "type": "method",
+          "class": "Processor",
+          "name": "process",
+          "lineno": 19,
+          "has_doc": false
+        }
+      ]
+    },
+    "C:\\Users\\pavit\\OneDrive\\Desktop\\AI_Powered_chatbot\\examples\\sample_b.py": {
       "total_items": 2,
       "doc_count": 1,
       "coverage_percent": 50.0,
@@ -21,8 +53,8 @@
     }
   },
   "summary": {
-    "total_items": 2,
-    "total_docs": 1,
-    "coverage_percent": 50.0
+    "total_items": 6,
+    "total_docs": 2,
+    "coverage_percent": 33.33
   }
 }

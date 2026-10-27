@@ -39,6 +39,7 @@ wheels/
 htmlcov/
 storage/reports/*.json
 storage/review_logs.json
+storage/uploads/
 
 # IDE & OS
 .vscode/

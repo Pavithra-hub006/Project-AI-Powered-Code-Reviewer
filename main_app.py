@@ -187,6 +187,49 @@ def compute_code_metrics(file_path):
     maintainability_index = max(0, 100 - sum(m["complexity"] for m in metrics))
     return maintainability_index, metrics
 
+
+def resolve_scan_path(path_str: str) -> Path:
+    """Resolve relative path against PROJECT_ROOT if needed."""
+    p = Path(path_str)
+    if not p.is_absolute():
+        resolved = PROJECT_ROOT / path_str
+        if resolved.exists():
+            return resolved
+    return p
+
+
+def process_scan_path(target_path_str: str):
+    """Scan and process files from a directory or file path."""
+    target_path = resolve_scan_path(target_path_str)
+    if not target_path.exists():
+        return None, f"Path not found: {target_path_str}"
+
+    results = parse_path(str(target_path))
+    if not results:
+        return None, f"No Python files found in: {target_path_str}"
+
+    report = compute_coverage(results)
+    write_report(report, "storage/reports/docstring_coverage.json")
+
+    st.session_state["active_scan_path"] = str(target_path)
+    st.session_state["last_scan_results"] = results
+    st.session_state["last_report"] = report
+    st.session_state.pop("cached_suggestions_key", None)
+    if results:
+        st.session_state["selected_file"] = str(results[0]["path"])
+    return results, None
+
+
+def process_uploaded_file(uploaded_file):
+    """Save an uploaded Python file to storage/uploads and process it."""
+    if not uploaded_file:
+        return None, "No file provided"
+    upload_dir = PROJECT_ROOT / "storage" / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    saved_path = upload_dir / uploaded_file.name
+    saved_path.write_bytes(uploaded_file.getbuffer())
+    return process_scan_path(str(saved_path))
+
 st.markdown("""
 <style>
 /* ============================================
@@ -394,6 +437,9 @@ if "view" not in st.session_state:
 if "selected_file" not in st.session_state:
     st.session_state.selected_file = None
 
+if "active_scan_path" not in st.session_state:
+    st.session_state.active_scan_path = "examples/"
+
 # ============================================================================
 # HEADER
 # ============================================================================
@@ -409,29 +455,52 @@ st.divider()
 with st.sidebar:
     st.markdown("## 🔍 Project Control")
 
-    scan_path = st.text_input("📁 Scan Path", value="examples/")
+    input_mode = st.radio(
+        "Source",
+        ["📁 Folder / Examples", "📤 Upload File"],
+        horizontal=True
+    )
+
     doc_style = st.selectbox(
         "📝 Docstring Style",
         ["google", "numpy", "rest"]
     )
 
-    if st.button("🚀 Scan Project", use_container_width=True):
-        with st.spinner("Scanning project..."):
-            try:
-                results = parse_path(scan_path)
-                report = compute_coverage(results)
-                write_report(report, "storage/reports/docstring_coverage.json")
+    if input_mode == "📁 Folder / Examples":
+        scan_path = st.text_input("📁 Scan Path", value="examples/")
+        if st.button("🚀 Scan Project", use_container_width=True):
+            with st.spinner("Scanning project..."):
+                res, err = process_scan_path(scan_path)
+                if err:
+                    st.error(f"❌ Scan failed: {err}")
+                else:
+                    st.success(f"✅ Scanned {len(res)} file(s)")
+                    st.rerun()
+    else:
+        uploaded_py = st.file_uploader(
+            "📤 Choose a Python file (.py)",
+            type=["py"],
+            key="sidebar_py_uploader"
+        )
+        if uploaded_py is not None:
+            if st.session_state.get("last_uploaded_filename") != uploaded_py.name:
+                with st.spinner(f"Analyzing {uploaded_py.name}..."):
+                    res, err = process_uploaded_file(uploaded_py)
+                    if err:
+                        st.error(f"❌ Upload error: {err}")
+                    else:
+                        st.session_state["last_uploaded_filename"] = uploaded_py.name
+                        st.success(f"✅ Loaded {uploaded_py.name}")
+                        st.rerun()
 
-                st.session_state["last_scan_results"] = results
-                st.session_state["last_report"] = report
-                st.session_state.pop("cached_suggestions_key", None)
-
-                if results:
-                    st.session_state["selected_file"] = str(results[0]["path"])
-
-                st.success(f"✅ Scanned {len(results)} file(s)")
-            except Exception as e:
-                st.error(f"❌ Scan failed: {e}")
+            if st.button("🔄 Re-analyze Uploaded File", use_container_width=True):
+                with st.spinner(f"Analyzing {uploaded_py.name}..."):
+                    res, err = process_uploaded_file(uploaded_py)
+                    if err:
+                        st.error(f"❌ Upload error: {err}")
+                    else:
+                        st.success(f"✅ Loaded {uploaded_py.name}")
+                        st.rerun()
 
     st.divider()
 
@@ -496,7 +565,35 @@ if view == "📊 Dashboard":
     st.markdown("## 📊 Project Dashboard")
 
     if not report:
-        st.info("👆 Click **Scan Project** in the sidebar to begin")
+        st.info("👋 Welcome! You can analyze the built-in examples or upload your own Python file below:")
+        dash_col1, dash_col2 = st.columns(2)
+        with dash_col1:
+            st.markdown('<div class="ui-card">', unsafe_allow_html=True)
+            st.markdown("### 📁 Use Built-in Examples")
+            st.write("Scan the sample Python files included with this project (`examples/`).")
+            if st.button("🚀 Scan Example Files", use_container_width=True, key="dash_btn_scan_examples"):
+                with st.spinner("Scanning examples..."):
+                    res, err = process_scan_path("examples/")
+                    if err:
+                        st.error(err)
+                    else:
+                        st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        with dash_col2:
+            st.markdown('<div class="ui-card">', unsafe_allow_html=True)
+            st.markdown("### 📤 Upload Your Own File")
+            st.write("Upload any `.py` file from your device to review its docstrings and code quality.")
+            dash_uploaded = st.file_uploader("Upload Python file (.py)", type=["py"], key="dash_py_uploader")
+            if dash_uploaded is not None and st.session_state.get("last_dash_uploaded") != dash_uploaded.name:
+                with st.spinner(f"Analyzing {dash_uploaded.name}..."):
+                    res, err = process_uploaded_file(dash_uploaded)
+                    if err:
+                        st.error(err)
+                    else:
+                        st.session_state["last_dash_uploaded"] = dash_uploaded.name
+                        st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
     else:
         summary = report["summary"]
 
@@ -748,21 +845,26 @@ elif view == "🧩 Docstrings":
     st.markdown("## 🧩 Docstring Review")
 
     if not results:
-        st.info("ℹ️ Run a scan first to review and generate docstrings.")
-        if st.button("🚀 Scan Project Now", use_container_width=True):
-            with st.spinner("Scanning project..."):
-                try:
-                    results = parse_path(scan_path)
-                    report = compute_coverage(results)
-                    write_report(report, "storage/reports/docstring_coverage.json")
-                    st.session_state["last_scan_results"] = results
-                    st.session_state["last_report"] = report
-                    st.session_state.pop("cached_suggestions_key", None)
-                    if results:
-                        st.session_state["selected_file"] = str(results[0]["path"])
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Scan failed: {e}")
+        st.info("ℹ️ No scanned files found yet. Choose an option to begin:")
+        doc_col1, doc_col2 = st.columns(2)
+        with doc_col1:
+            if st.button("🚀 Scan Example Files Now", use_container_width=True, key="docstrings_scan_btn"):
+                with st.spinner("Scanning examples..."):
+                    res, err = process_scan_path("examples/")
+                    if err:
+                        st.error(err)
+                    else:
+                        st.rerun()
+        with doc_col2:
+            doc_up = st.file_uploader("Or Upload a .py file", type=["py"], key="docstrings_uploader")
+            if doc_up is not None and st.session_state.get("last_doc_up") != doc_up.name:
+                with st.spinner(f"Analyzing {doc_up.name}..."):
+                    res, err = process_uploaded_file(doc_up)
+                    if err:
+                        st.error(err)
+                    else:
+                        st.session_state["last_doc_up"] = doc_up.name
+                        st.rerun()
     else:
         # Build suggestions (cached to avoid repeated LLM calls on re-renders)
         cache_key = f"{doc_style}_{len(results)}"
@@ -845,12 +947,8 @@ elif view == "🧩 Docstrings":
                                     indent=item["indent"],
                                     docstring=item["doc"],
                                 )
-                                results = parse_path(scan_path)
-                                report = compute_coverage(results)
-                                write_report(report, "storage/reports/docstring_coverage.json")
-                                st.session_state["last_scan_results"] = results
-                                st.session_state["last_report"] = report
-                                st.session_state.pop("cached_suggestions_key", None)
+                                active_path = st.session_state.get("active_scan_path", "examples/")
+                                process_scan_path(active_path)
                                 st.success("✅ Applied successfully!")
                                 st.rerun()
                             except Exception as e:
@@ -872,10 +970,11 @@ elif view == "🧩 Docstrings":
 
 elif view == "🧪 Validation":
     st.markdown("## 🧪 PEP 257 Validation")
+    active_path = st.session_state.get("active_scan_path", "examples/")
 
     if st.button("▶️ Run Validation", use_container_width=True):
-        with st.spinner("Running pydocstyle validation..."):
-            st.session_state["validation_result"] = run_pydocstyle(scan_path)
+        with st.spinner(f"Running pydocstyle validation on {active_path}..."):
+            st.session_state["validation_result"] = run_pydocstyle(active_path)
 
     result = st.session_state.get("validation_result")
 
