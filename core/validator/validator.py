@@ -1,25 +1,56 @@
+import ast
+import subprocess
+import sys
+
+
+class PydocstyleResult(list):
+    """List of issue strings that also supports dict access for backward compatibility."""
+    def __init__(self, issues, passed=False):
+        flat_issues = []
+        for it in issues:
+            if isinstance(it, (list, tuple)):
+                flat_issues.append(" ".join(line.strip() for line in it if line.strip()))
+            elif it:
+                flat_issues.append(str(it).strip())
+        super().__init__(flat_issues)
+        self.issues = flat_issues
+        self.raw_blocks = issues
+        self.passed = passed
+
+    def get(self, key, default=None):
+        if key == "issues":
+            return self.issues
+        if key == "passed":
+            return self.passed
+        if key == "raw_blocks":
+            return self.raw_blocks
+        return default
+
+    def __getitem__(self, item):
+        if isinstance(item, str):
+            return self.get(item)
+        return super().__getitem__(item)
+
+
 def validate_docstrings(path: str):
     """
     Validate docstrings using pydocstyle.
     Returns list of issues (strings).
     """
     result = run_pydocstyle(path)
-
     if result["passed"]:
         return []
-
     return result["issues"]
-def run_pydocstyle(path):
-    import subprocess
-    import sys
 
+
+def run_pydocstyle(path: str) -> PydocstyleResult:
     result = subprocess.run(
         [sys.executable, "-m", "pydocstyle", path],
         capture_output=True,
         text=True
     )
 
-    # pydocstyle reports to stderr
+    # pydocstyle reports to stderr or stdout
     raw_output = result.stderr or result.stdout
 
     issues = []
@@ -36,11 +67,7 @@ def run_pydocstyle(path):
     if block:
         issues.append(block)
 
-    return {
-        "passed": result.returncode == 0,
-        "issues": issues   # 🔴 list of lists (each issue multiline)
-    }
-import ast
+    return PydocstyleResult(issues=issues, passed=(result.returncode == 0))
 
 
 def compute_complexity(source_code: str):
@@ -57,6 +84,12 @@ def compute_complexity(source_code: str):
             self.complexity = 0
 
         def visit_FunctionDef(self, node):
+            self._handle_func(node)
+
+        def visit_AsyncFunctionDef(self, node):
+            self._handle_func(node)
+
+        def _handle_func(self, node):
             prev_function = self.current_function
             prev_complexity = self.complexity
 
@@ -81,12 +114,16 @@ def compute_complexity(source_code: str):
             self.complexity += 1
             self.generic_visit(node)
 
+        def visit_AsyncFor(self, node):
+            self.complexity += 1
+            self.generic_visit(node)
+
         def visit_While(self, node):
             self.complexity += 1
             self.generic_visit(node)
 
         def visit_Try(self, node):
-            self.complexity += len(node.handlers)
+            self.complexity += max(1, len(node.handlers))
             self.generic_visit(node)
 
     try:
