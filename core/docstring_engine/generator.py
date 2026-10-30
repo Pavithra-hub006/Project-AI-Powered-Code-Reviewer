@@ -2,8 +2,8 @@
 core.docstring_engine.generator
 
 Generates style-consistent docstrings using:
-- LLM for semantic content (with full code context)
-- Deterministic formatters for PEP 257 & Google/NumPy/reST structure
+- LLM for semantic content
+- Deterministic formatters for structure
 """
 
 from typing import Dict, List, Optional
@@ -13,60 +13,62 @@ from core.docstring_engine.llm_integration import generate_docstring_content
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
-def _get_arg_type(arg: Dict, arg_types: Dict[str, str]) -> str:
-    return arg.get("annotation") or arg_types.get(arg.get("name", ""), "Any")
+def _format_args_section(args: List[Dict], arg_desc: Dict[str, str]) -> str:
+    # Filter out self and cls
+    filtered = [a for a in args if a.get("name") not in ("self", "cls")]
+    if not filtered:
+        return ""
+    lines = ["Args:"]
+    for a in filtered:
+        name = a["name"]
+        annotation = a.get("annotation")
+        desc = arg_desc.get(name, f"The {name} argument.")
+        if annotation:
+            lines.append(f"    {name} ({annotation}): {desc}")
+        else:
+            lines.append(f"    {name}: {desc}")
+    return "\n".join(lines)
 
 
-def _clean_period(text: str) -> str:
-    text = text.strip()
-    if text and not text.endswith((".", "!", "?")):
-        return text + "."
-    return text
-
-
-def _clean_exc_name(exc: str) -> str:
-    """Extract class name from calls like ValueError('bad')."""
-    return exc.split("(")[0].strip()
+def _format_returns_section(returns: Optional[str], return_desc: str) -> str:
+    if not returns and not return_desc:
+        return ""
+    if returns in ("None", "NoneType") and not return_desc:
+        return ""
+    
+    clean_desc = return_desc or "Result of the operation."
+    if returns and returns not in ("None", "NoneType"):
+        return f"Returns:\n    {returns}: {clean_desc}"
+    elif clean_desc and clean_desc.lower() != "none":
+        return f"Returns:\n    {clean_desc}"
+    return ""
 
 
 # -------------------------------------------------
 # Google style
 # -------------------------------------------------
 def generate_google_docstring(fn: Dict, llm: Dict) -> str:
-    summary = _clean_period(llm.get("summary", f"Process `{fn['name']}` operations."))
+    summary = llm.get("summary", f"Execute `{fn['name']}` operations.")
     arg_desc = llm.get("args", {})
-    arg_types = llm.get("arg_types", {})
     return_desc = llm.get("returns", "")
-    return_type = fn.get("returns") or llm.get("return_type", "")
     raises_desc = llm.get("raises", {})
 
     parts = [summary, ""]
 
-    # Filter out self/cls
-    args_meta = [a for a in fn.get("args", []) if a.get("name") not in ("self", "cls")]
-    if args_meta:
-        lines = ["Args:"]
-        for a in args_meta:
-            name = a["name"]
-            typ = _get_arg_type(a, arg_types)
-            desc = _clean_period(arg_desc.get(name, f"The {name} argument."))
-            lines.append(f"    {name} ({typ}): {desc}")
-        parts.append("\n".join(lines))
+    args_section = _format_args_section(fn.get("args", []), arg_desc)
+    if args_section:
+        parts.append(args_section)
         parts.append("")
 
-    if return_desc or (return_type and return_type.lower() != "none"):
-        ret_type_str = return_type or "Any"
-        ret_msg = _clean_period(return_desc or "Result of function execution.")
-        parts.append(f"Returns:\n    {ret_type_str}: {ret_msg}")
+    returns_section = _format_returns_section(fn.get("returns"), return_desc)
+    if returns_section:
+        parts.append(returns_section)
         parts.append("")
 
     if raises_desc:
-        lines = ["Raises:"]
+        parts.append("Raises:")
         for exc, desc in raises_desc.items():
-            exc_clean = _clean_exc_name(exc)
-            desc_clean = _clean_period(desc)
-            lines.append(f"    {exc_clean}: {desc_clean}")
-        parts.append("\n".join(lines))
+            parts.append(f"    {exc}: {desc}")
         parts.append("")
 
     doc = "\n".join(parts).strip()
@@ -77,79 +79,83 @@ def generate_google_docstring(fn: Dict, llm: Dict) -> str:
 # NumPy style
 # -------------------------------------------------
 def generate_numpy_docstring(fn: Dict, llm: Dict) -> str:
-    summary = _clean_period(llm.get("summary", f"Process `{fn['name']}` operations."))
+    summary = llm.get("summary", f"{fn['name']} function.")
     arg_desc = llm.get("args", {})
-    arg_types = llm.get("arg_types", {})
     return_desc = llm.get("returns", "")
-    return_type = fn.get("returns") or llm.get("return_type", "")
     raises_desc = llm.get("raises", {})
 
-    lines = [summary, ""]
+    lines = [summary]
+    filtered_args = [a for a in fn.get("args", []) if a.get("name") not in ("self", "cls")]
 
-    args_meta = [a for a in fn.get("args", []) if a.get("name") not in ("self", "cls")]
-    if args_meta:
-        lines.extend(["Parameters", "----------"])
-        for a in args_meta:
-            name = a["name"]
-            typ = _get_arg_type(a, arg_types)
-            desc = _clean_period(arg_desc.get(name, f"The {name} input parameter."))
-            lines.append(f"{name} : {typ}")
+    if filtered_args:
+        lines.extend(["", "Parameters", "----------"])
+        for arg in filtered_args:
+            name = arg["name"]
+            annotation = arg.get("annotation")
+            desc = arg_desc.get(name, f"The {name} parameter.")
+            if annotation:
+                lines.append(f"{name} : {annotation}")
+            else:
+                lines.append(f"{name}")
             lines.append(f"    {desc}")
-        lines.append("")
 
-    if return_desc or (return_type and return_type.lower() != "none"):
+    returns = fn.get("returns")
+    if returns and returns not in ("None", "NoneType"):
         lines.extend([
+            "",
             "Returns",
             "-------",
-            f"{return_type or 'Any'}",
-            f"    {_clean_period(return_desc or 'Result of the function.')}",
-            ""
+            f"{returns}",
+            f"    {return_desc or 'Result of the operation.'}"
+        ])
+    elif return_desc and return_desc.lower() != "none":
+        lines.extend([
+            "",
+            "Returns",
+            "-------",
+            f"    {return_desc}"
         ])
 
     if raises_desc:
-        lines.extend(["Raises", "------"])
+        lines.extend(["", "Raises", "------"])
         for exc, desc in raises_desc.items():
-            exc_clean = _clean_exc_name(exc)
-            lines.append(f"{exc_clean}")
-            lines.append(f"    {_clean_period(desc)}")
-        lines.append("")
+            lines.append(f"{exc}")
+            lines.append(f"    {desc}")
 
-    doc = "\n".join(lines).strip()
-    return f'"""\n{doc}\n"""'
+    return f'"""\n' + "\n".join(lines) + '\n"""'
 
 
 # -------------------------------------------------
 # reST style
 # -------------------------------------------------
 def generate_rest_docstring(fn: Dict, llm: Dict) -> str:
-    summary = _clean_period(llm.get("summary", f"Process `{fn['name']}` operations."))
+    summary = llm.get("summary", f"{fn['name']} function.")
     arg_desc = llm.get("args", {})
-    arg_types = llm.get("arg_types", {})
     return_desc = llm.get("returns", "")
-    return_type = fn.get("returns") or llm.get("return_type", "")
     raises_desc = llm.get("raises", {})
 
     lines = [summary, ""]
+    filtered_args = [a for a in fn.get("args", []) if a.get("name") not in ("self", "cls")]
 
-    args_meta = [a for a in fn.get("args", []) if a.get("name") not in ("self", "cls")]
-    for a in args_meta:
-        name = a["name"]
-        typ = _get_arg_type(a, arg_types)
-        desc = _clean_period(arg_desc.get(name, f"The {name} input parameter."))
+    for arg in filtered_args:
+        name = arg["name"]
+        annotation = arg.get("annotation")
+        desc = arg_desc.get(name, f"The {name} parameter.")
         lines.append(f":param {name}: {desc}")
-        lines.append(f":type {name}: {typ}")
+        if annotation:
+            lines.append(f":type {name}: {annotation}")
 
-    if return_desc or (return_type and return_type.lower() != "none"):
-        lines.append(f":return: {_clean_period(return_desc or 'Result of the function.')}")
-        if return_type:
-            lines.append(f":rtype: {return_type}")
+    returns = fn.get("returns")
+    if returns and returns not in ("None", "NoneType"):
+        lines.append(f":return: {return_desc or 'Result of the operation.'}")
+        lines.append(f":rtype: {returns}")
+    elif return_desc and return_desc.lower() != "none":
+        lines.append(f":return: {return_desc}")
 
     for exc, desc in raises_desc.items():
-        exc_clean = _clean_exc_name(exc)
-        lines.append(f":raises {exc_clean}: {_clean_period(desc)}")
+        lines.append(f":raises {exc}: {desc}")
 
-    doc = "\n".join(lines).strip()
-    return f'"""\n{doc}\n"""'
+    return f'"""\n' + "\n".join(lines) + '\n"""'
 
 
 # -------------------------------------------------
@@ -158,7 +164,7 @@ def generate_rest_docstring(fn: Dict, llm: Dict) -> str:
 def generate_docstring(fn: Dict, style: str = "google") -> str:
     """
     Generate docstring using:
-    - LLM for meaning and type inference
+    - LLM for meaning
     - Code for formatting
     """
     llm_content = generate_docstring_content(fn)

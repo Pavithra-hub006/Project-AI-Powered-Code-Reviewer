@@ -2,28 +2,30 @@
 """Compute docstring coverage and write report to JSON."""
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
-def compute_coverage(per_file_results: List[Dict[str, Any]], threshold: float = 80.0) -> Dict[str, Any]:
+def compute_coverage(per_file_results: List[Dict[str, Any]], threshold: Optional[float] = None) -> Dict[str, Any]:
     """Compute per-file coverage summary and global summary.
 
     per_file_results: list of parse_file outputs (dicts with 'functions' and 'classes')
-    threshold: docstring coverage percentage threshold (default 80.0)
     """
     files = {}
     total_items = 0
     total_docs = 0
+    total_functions = 0
 
     for r in per_file_results:
-        path = r.get("path") or r.get("file_path", "unknown")
+        path = r.get("path") or r.get("file_path", "")
         fns = r.get("functions", [])
         classes = r.get("classes", [])
         file_items = 0
         file_docs = 0
         items = []
 
-        # Functions
+        total_functions += len(fns)
+
+        # functions
         for f in fns:
             file_items += 1
             if f.get("has_docstring"):
@@ -35,7 +37,7 @@ def compute_coverage(per_file_results: List[Dict[str, Any]], threshold: float = 
                 "has_doc": f.get("has_docstring")
             })
 
-        # Classes and methods
+        # classes & methods
         for c in classes:
             file_items += 1
             if c.get("has_docstring"):
@@ -68,20 +70,22 @@ def compute_coverage(per_file_results: List[Dict[str, Any]], threshold: float = 
         total_items += file_items
         total_docs += file_docs
 
-    overall = round((total_docs / total_items) * 100, 2) if total_items > 0 else 0.0
-    aggregate = {
+    overall = round((total_docs / total_items) * 100, 2) if total_items > 0 else 0
+    meets_threshold = bool(overall >= threshold) if threshold is not None else True
+
+    summary = {
         "total_items": total_items,
-        "total_functions": total_items,
         "total_docs": total_docs,
+        "total_functions": total_functions,
         "documented": total_docs,
         "coverage_percent": overall,
-        "meets_threshold": bool(overall >= threshold),
+        "meets_threshold": meets_threshold
     }
 
     return {
         "files": files,
-        "summary": aggregate,
-        "aggregate": aggregate
+        "summary": summary,
+        "aggregate": summary
     }
 
 

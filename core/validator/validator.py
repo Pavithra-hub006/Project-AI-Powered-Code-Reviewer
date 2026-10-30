@@ -1,56 +1,39 @@
-import ast
 import subprocess
 import sys
+import ast
+from typing import List, Dict, Any
 
 
-class PydocstyleResult(list):
-    """List of issue strings that also supports dict access for backward compatibility."""
-    def __init__(self, issues, passed=False):
-        flat_issues = []
-        for it in issues:
-            if isinstance(it, (list, tuple)):
-                flat_issues.append(" ".join(line.strip() for line in it if line.strip()))
-            elif it:
-                flat_issues.append(str(it).strip())
-        super().__init__(flat_issues)
-        self.issues = flat_issues
-        self.raw_blocks = issues
+class ValidationResult(list):
+    """List subclass containing issue strings that also supports dict access."""
+    def __init__(self, issues: List[str], passed: bool):
+        super().__init__(issues)
         self.passed = passed
+        self.issues = issues
 
-    def get(self, key, default=None):
-        if key == "issues":
-            return self.issues
+    def __getitem__(self, key):
         if key == "passed":
             return self.passed
-        if key == "raw_blocks":
-            return self.raw_blocks
+        if key == "issues":
+            return self.issues
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        if key == "passed":
+            return self.passed
+        if key == "issues":
+            return self.issues
         return default
 
-    def __getitem__(self, item):
-        if isinstance(item, str):
-            return self.get(item)
-        return super().__getitem__(item)
 
-
-def validate_docstrings(path: str):
-    """
-    Validate docstrings using pydocstyle.
-    Returns list of issues (strings).
-    """
-    result = run_pydocstyle(path)
-    if result["passed"]:
-        return []
-    return result["issues"]
-
-
-def run_pydocstyle(path: str) -> PydocstyleResult:
+def run_pydocstyle(path: str):
+    """Execute pydocstyle and return a ValidationResult list of issue strings."""
     result = subprocess.run(
-        [sys.executable, "-m", "pydocstyle", path],
+        [sys.executable, "-m", "pydocstyle", str(path)],
         capture_output=True,
         text=True
     )
 
-    # pydocstyle reports to stderr or stdout
     raw_output = result.stderr or result.stdout
 
     issues = []
@@ -59,78 +42,52 @@ def run_pydocstyle(path: str) -> PydocstyleResult:
     for line in raw_output.splitlines():
         if line.strip() == "":
             if block:
-                issues.append(block)
+                issues.append("\n".join(block))
                 block = []
         else:
             block.append(line.rstrip())
 
     if block:
-        issues.append(block)
+        issues.append("\n".join(block))
 
-    return PydocstyleResult(issues=issues, passed=(result.returncode == 0))
+    return ValidationResult(issues=issues, passed=(result.returncode == 0))
 
 
-def compute_complexity(source_code: str):
+def validate_docstrings(path: str):
     """
-    Compute cyclomatic complexity for functions in given source code.
-
-    Returns:
-        List[dict]: [{ "name": str, "complexity": int }]
+    Validate docstrings using pydocstyle.
+    Returns list of issue strings.
     """
-    class ComplexityVisitor(ast.NodeVisitor):
-        def __init__(self):
-            self.results = []
-            self.current_function = None
-            self.complexity = 0
+    result = run_pydocstyle(path)
+    if result.passed:
+        return []
+    return result.issues
 
-        def visit_FunctionDef(self, node):
-            self._handle_func(node)
 
-        def visit_AsyncFunctionDef(self, node):
-            self._handle_func(node)
-
-        def _handle_func(self, node):
-            prev_function = self.current_function
-            prev_complexity = self.complexity
-
-            self.current_function = node.name
-            self.complexity = 1  # base complexity
-
-            self.generic_visit(node)
-
-            self.results.append({
-                "name": node.name,
-                "complexity": self.complexity
-            })
-
-            self.current_function = prev_function
-            self.complexity = prev_complexity
-
-        def visit_If(self, node):
-            self.complexity += 1
-            self.generic_visit(node)
-
-        def visit_For(self, node):
-            self.complexity += 1
-            self.generic_visit(node)
-
-        def visit_AsyncFor(self, node):
-            self.complexity += 1
-            self.generic_visit(node)
-
-        def visit_While(self, node):
-            self.complexity += 1
-            self.generic_visit(node)
-
-        def visit_Try(self, node):
-            self.complexity += max(1, len(node.handlers))
-            self.generic_visit(node)
-
+def compute_complexity(source_code: str) -> List[Dict[str, Any]]:
+    """
+    Compute cyclomatic complexity for all functions in the given source code.
+    Returns list of dicts: [{"name": str, "complexity": int, "line": int}].
+    """
     try:
         tree = ast.parse(source_code)
-    except SyntaxError:
+    except Exception:
         return []
 
-    visitor = ComplexityVisitor()
-    visitor.visit(tree)
-    return visitor.results
+    results = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            complexity = 1
+            for child in ast.walk(node):
+                if isinstance(child, (ast.If, ast.For, ast.While, ast.With, ast.Try,
+                                      ast.ExceptHandler, ast.ListComp, ast.DictComp,
+                                      ast.SetComp, ast.GeneratorExp, ast.IfExp)):
+                    complexity += 1
+                elif isinstance(child, ast.BoolOp):
+                    complexity += max(1, len(child.values) - 1)
+            results.append({
+                "name": node.name,
+                "complexity": complexity,
+                "line": node.lineno
+            })
+    return results

@@ -1,13 +1,12 @@
 """
-AI-Powered Code Reviewer - Production Studio
+AI-Powered Code Reviewer - Main Streamlit Application
 ------------------------------------------------------
-Engineered by Pavithra Kotha
 Features:
-- Deterministic AST static analysis (functions, async functions, class methods)
-- PEP 257 docstring validation & cyclomatic complexity
-- Groq / Llama 3.1 LLM-driven docstring generation with full code context
-- Multi-source ingestion: Examples, File Upload, Direct Code Paste
-- Production-grade responsive glassmorphic UI
+- Single & clean Python File Upload for Streamlit Cloud deployment
+- AST-based parsing of functions, classes, and inner methods
+- AI docstring generation (Google, NumPy, reST) via Groq LLM
+- In-place Accept & Decline buttons with instant file download
+- PEP 257 validation and maintainability metrics
 """
 
 import os
@@ -19,11 +18,14 @@ from dotenv import load_dotenv
 import streamlit as st
 import pandas as pd
 
+# ----------------------------------------------------------------------------
+# 1. Environment & API Key Setup
+# ----------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent
 ENV_PATH = PROJECT_ROOT / ".env"
 load_dotenv(ENV_PATH, override=True)
 
-# Support Streamlit Cloud Secrets (for cloud deployment)
+# Support Streamlit Cloud Secrets
 if not os.getenv("GROQ_API_KEY"):
     try:
         if hasattr(st, "secrets") and "GROQ_API_KEY" in st.secrets:
@@ -40,939 +42,705 @@ if not os.getenv("GROQ_API_KEY"):
     """)
     st.stop()
 
-# Ensure project root is in sys.path
+# Add project root to sys.path
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from dashboard_ui.dashboard import filter_functions
-from core.parser.python_parser import parse_path, parse_file
+from core.parser.python_parser import parse_file, parse_source
 from core.docstring_engine.generator import generate_docstring
-from core.reporter.coverage_reporter import compute_coverage, write_report
 from core.docstring_engine.apply_docstring import apply_docstring_to_file
+from core.reporter.coverage_reporter import compute_coverage, write_report
 from core.validator.validator import run_pydocstyle
 
-# -----------------------------------------------------------------------------
-# PAGE CONFIGURATION
-# -----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# 2. Page Configuration
+# ----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="AI Code Reviewer | Pavithra Kotha",
+    page_title="AI Code Reviewer by Pavithra Kotha",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# -----------------------------------------------------------------------------
-# HELPER FUNCTIONS
-# -----------------------------------------------------------------------------
-def load_pytest_results_local():
-    """Load pytest results from local storage."""
-    path = PROJECT_ROOT / "storage" / "reports" / "pytest_results.json"
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-
-def summarize_tests_by_file(pytest_data):
-    """Summarize pytest results by test file."""
-    summary = {}
-    for test in (pytest_data or {}).get("tests", []):
-        nodeid = test.get("nodeid", "")
-        outcome = test.get("outcome", "")
-        longrepr = test.get("longrepr", "")
-        file_name = nodeid.split("::")[0]
-
-        if file_name not in summary:
-            summary[file_name] = {
-                "total": 0,
-                "passed": 0,
-                "failed": 0,
-                "errors": []
-            }
-
-        summary[file_name]["total"] += 1
-        if outcome == "passed":
-            summary[file_name]["passed"] += 1
-        elif outcome == "failed":
-            summary[file_name]["failed"] += 1
-            summary[file_name]["errors"].append(longrepr)
-
-    return summary
-
-
-def build_export_rows(results):
-    """Build export rows for JSON/CSV download."""
-    rows = []
-    for r in (results or []):
-        file_name = Path(r.get("path", "")).name
-
-        for fn in r.get("functions", []):
-            args = ", ".join(a["name"] for a in fn.get("args", []))
-            rows.append({
-                "File": file_name,
-                "Type": "Function",
-                "Class": "-",
-                "Name": fn["name"],
-                "Arguments": args,
-                "Docstring": "Present" if fn.get("has_docstring") else "Missing",
-                "Complexity": fn.get("complexity", 1)
-            })
-
-        for cls in r.get("classes", []):
-            cls_name = cls.get("name", "")
-            rows.append({
-                "File": file_name,
-                "Type": "Class",
-                "Class": cls_name,
-                "Name": cls_name,
-                "Arguments": "-",
-                "Docstring": "Present" if cls.get("has_docstring") else "Missing",
-                "Complexity": 1
-            })
-            for m in cls.get("methods", []):
-                args = ", ".join(a["name"] for a in m.get("args", []))
-                rows.append({
-                    "File": file_name,
-                    "Type": "Method",
-                    "Class": cls_name,
-                    "Name": m["name"],
-                    "Arguments": args,
-                    "Docstring": "Present" if m.get("has_docstring") else "Missing",
-                    "Complexity": m.get("complexity", 1)
-                })
-
-    return rows
-
-
-def classify_issues(issues):
-    """Classify validation issues into errors and warnings."""
-    warnings = []
-    errors = []
-    for issue in (issues or []):
-        text = issue if isinstance(issue, str) else " ".join(issue)
-        if "D1" in text:
-            errors.append(text)
-        else:
-            warnings.append(text)
-    return errors, warnings
-
-
-def compute_code_metrics(file_path):
-    """Compute maintainability index and cyclomatic complexity metrics."""
-    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-        tree = ast.parse(f.read())
-
-    metrics = []
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            complexity = len(getattr(node, "body", []))
-            metrics.append({
-                "name": node.name,
-                "type": "Class" if isinstance(node, ast.ClassDef) else "Function",
-                "line": node.lineno,
-                "complexity": complexity
-            })
-
-    total_complexity = sum(m["complexity"] for m in metrics)
-    maintainability_index = max(10, min(100, 100 - total_complexity * 2))
-    return maintainability_index, metrics
-
-
-def resolve_scan_path(path_str: str) -> Path:
-    """Resolve relative path against PROJECT_ROOT if needed."""
-    p = Path(path_str)
-    if not p.is_absolute():
-        resolved = PROJECT_ROOT / path_str
-        if resolved.exists():
-            return resolved
-    return p
-
-
-def process_scan_path(target_path_str: str):
-    """Scan and process files from a directory or single file path."""
-    target_path = resolve_scan_path(target_path_str)
-    if not target_path.exists():
-        return None, f"Path not found: {target_path_str}"
-
-    results = parse_path(str(target_path))
-    if not results:
-        return None, f"No Python files found in: {target_path_str}"
-
-    report = compute_coverage(results)
-    write_report(report, str(PROJECT_ROOT / "storage" / "reports" / "docstring_coverage.json"))
-
-    st.session_state["active_scan_path"] = str(target_path)
-    st.session_state["last_scan_results"] = results
-    st.session_state["last_report"] = report
-    st.session_state.pop("cached_suggestions_key", None)
-    if results:
-        st.session_state["selected_file"] = str(results[0]["path"])
-    return results, None
-
-
-def process_uploaded_file(uploaded_file):
-    """Save an uploaded Python file to storage/uploads and process it."""
-    if not uploaded_file:
-        return None, "No file provided"
-    upload_dir = PROJECT_ROOT / "storage" / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    saved_path = upload_dir / uploaded_file.name
-    saved_path.write_bytes(uploaded_file.getbuffer())
-    return process_scan_path(str(saved_path))
-
-
-def process_pasted_code(code_str: str, filename: str = "snippet.py"):
-    """Save raw pasted Python code to storage/uploads and process it."""
-    if not code_str or not code_str.strip():
-        return None, "Please provide Python code to analyze"
-    upload_dir = PROJECT_ROOT / "storage" / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    saved_path = upload_dir / filename
-    saved_path.write_text(code_str, encoding="utf-8")
-    return process_scan_path(str(saved_path))
-
-
-def get_all_callables(results_list: list) -> list:
-    """Collect all functions and class methods across parsed files."""
-    items = []
-    for r in (results_list or []):
-        fp = r.get("path")
-        for fn in r.get("functions", []):
-            item = dict(fn)
-            item["file"] = fp
-            item["parent_class"] = None
-            items.append(item)
-        for cls in r.get("classes", []):
-            cls_name = cls.get("name")
-            for m in cls.get("methods", []):
-                item = dict(m)
-                item["file"] = fp
-                item["parent_class"] = cls_name
-                items.append(item)
-    return items
-
-
-# -----------------------------------------------------------------------------
-# HIGH-END MODERN UI STYLES (Cyber / Slate Studio Theme)
-# -----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# 3. Styling
+# ----------------------------------------------------------------------------
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
-/* Base canvas */
-html, body, [class*="css"] {
-    font-family: 'Plus Jakarta Sans', sans-serif;
-}
-
+/* Global background */
 .stApp {
-    background: radial-gradient(circle at 15% 15%, #131b2e 0%, #0b0f19 50%, #080c14 100%);
-    color: #F1F5F9;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background-attachment: fixed;
 }
 
-/* Main container */
+/* Main Container Card */
 .main .block-container {
-    max-width: 1400px;
-    padding: 2.2rem 2.8rem 4rem 2.8rem;
-}
-
-/* Glassmorphism Cards */
-.hero-card {
-    background: linear-gradient(135deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.8) 100%);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background-color: #F8FAFC;
     border-radius: 18px;
-    padding: 2rem 2.4rem;
-    box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    padding: 2.2rem;
+    box-shadow: 0 15px 45px rgba(0,0,0,0.25);
+    margin-top: 1rem;
     margin-bottom: 2rem;
-    backdrop-filter: blur(12px);
 }
 
-.stat-card {
-    background: linear-gradient(145deg, #131c2e 0%, #0f172a 100%);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+/* Custom UI Cards */
+.ui-card {
+    background: #FFFFFF;
     border-radius: 14px;
-    padding: 1.4rem;
-    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
-    transition: transform 0.25s ease, border-color 0.25s ease;
-}
-
-.stat-card:hover {
-    transform: translateY(-3px);
-    border-color: rgba(99, 102, 241, 0.5);
-}
-
-.doc-review-card {
-    background: #0f172a;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-left: 4px solid #6366f1;
-    border-radius: 12px;
     padding: 1.5rem;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.06);
+    border: 1px solid #E2E8F0;
+    margin-bottom: 1.2rem;
+}
+
+.hero-box {
+    background: linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%);
+    border: 1px solid #C7D2FE;
+    border-radius: 14px;
+    padding: 1.8rem;
     margin-bottom: 1.5rem;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
 }
 
-/* Modern Gradient Badges */
-.badge-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.78rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    padding: 4px 10px;
+.status-badge-error {
+    background-color: #FEE2E2;
+    color: #991B1B;
+    padding: 3px 10px;
     border-radius: 9999px;
+    font-size: 0.82rem;
+    font-weight: 600;
 }
 
-.badge-indigo {
-    background: rgba(99, 102, 241, 0.15);
-    color: #818cf8;
-    border: 1px solid rgba(99, 102, 241, 0.3);
-}
-
-.badge-emerald {
-    background: rgba(16, 185, 129, 0.15);
-    color: #34d399;
-    border: 1px solid rgba(16, 185, 129, 0.3);
-}
-
-.badge-rose {
-    background: rgba(244, 63, 94, 0.15);
-    color: #fb7185;
-    border: 1px solid rgba(244, 63, 94, 0.3);
-}
-
-.badge-amber {
-    background: rgba(245, 158, 11, 0.15);
-    color: #fbbf24;
-    border: 1px solid rgba(245, 158, 11, 0.3);
+.status-badge-success {
+    background-color: #DCFCE7;
+    color: #166534;
+    padding: 3px 10px;
+    border-radius: 9999px;
+    font-size: 0.82rem;
+    font-weight: 600;
 }
 
 /* Sidebar styling */
 section[data-testid="stSidebar"] {
-    background: #090d16 !important;
-    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+    border-right: 2px solid #8B5CF6;
 }
-
-section[data-testid="stSidebar"] h1, 
-section[data-testid="stSidebar"] h2, 
+section[data-testid="stSidebar"] h1,
+section[data-testid="stSidebar"] h2,
 section[data-testid="stSidebar"] h3 {
-    color: #F8FAFC !important;
-    font-weight: 700;
-}
-
-section[data-testid="stSidebar"] p,
-section[data-testid="stSidebar"] label {
-    color: #94A3B8 !important;
-    font-weight: 500;
-}
-
-/* Input boxes & Uploaders */
-div[data-baseweb="input"], div[data-baseweb="select"] {
-    background-color: #0f172a !important;
-    border: 1px solid rgba(255, 255, 255, 0.12) !important;
-    border-radius: 10px !important;
-    color: #F8FAFC !important;
-}
-
-div[data-testid="stFileUploader"] {
-    background-color: rgba(15, 23, 42, 0.5);
-    border: 1px dashed rgba(99, 102, 241, 0.4);
-    border-radius: 12px;
-    padding: 12px;
-}
-
-/* Tabs styling */
-.stTabs [data-baseweb="tab-list"] {
-    gap: 8px;
-    background-color: rgba(15, 23, 42, 0.6);
-    padding: 6px;
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.stTabs [data-baseweb="tab"] {
-    padding: 10px 20px;
-    border-radius: 8px;
-    font-weight: 600;
-    color: #94A3B8;
-    transition: all 0.2s ease;
-}
-
-.stTabs [aria-selected="true"] {
-    background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%) !important;
     color: #FFFFFF !important;
-    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
 }
-
-/* Buttons */
-.stButton button {
-    border-radius: 9px;
+section[data-testid="stSidebar"] label {
+    color: #FFFFFF !important;
     font-weight: 600;
-    padding: 0.55rem 1.2rem;
-    transition: all 0.25s ease;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-}
-
-.stButton button:hover {
-    border-color: #818cf8;
-    transform: translateY(-1px);
-    box-shadow: 0 6px 15px rgba(99, 102, 241, 0.25);
-}
-
-/* Code blocks */
-code, pre {
-    font-family: 'JetBrains Mono', Consolas, monospace !important;
-    border-radius: 8px !important;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# SESSION STATE INITIALIZATION
-# -----------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
+# 4. Helper Functions
+# ----------------------------------------------------------------------------
+DEMO_CODE = '''import math
+
+def calculate_average(numbers):
+    total = 0
+    for n in numbers:
+        total += n
+    if len(numbers) == 0:
+        return 0
+    return total / len(numbers)
+
+
+def compute_tax(income: float, rate: float = 0.15) -> float:
+    if income < 0:
+        raise ValueError("Income cannot be negative")
+    return income * rate
+
+
+class DataProcessor:
+    def __init__(self, name: str):
+        self.name = name
+
+    def process_records(self, records: list):
+        filtered = []
+        for r in records:
+            if r is not None:
+                filtered.append(r)
+        return filtered
+'''
+
+
+def load_demo_file():
+    """Create a sample Python file in storage/uploads and load it."""
+    upload_dir = PROJECT_ROOT / "storage" / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    demo_path = upload_dir / "demo_sample.py"
+    demo_path.write_text(DEMO_CODE, encoding="utf-8")
+    return process_file_path(str(demo_path))
+
+
+def process_file_path(path_str: str):
+    """Scan and parse a single Python file using AST."""
+    target_path = Path(path_str)
+    if not target_path.exists():
+        return None, f"File not found: {path_str}"
+
+    try:
+        parsed = parse_file(str(target_path))
+    except SyntaxError as e:
+        return None, f"Python Syntax Error on line {e.lineno}: {e.msg}"
+    except Exception as e:
+        return None, f"Failed to parse file: {e}"
+
+    results = [parsed]
+    report = compute_coverage(results)
+    write_report(report, "storage/reports/docstring_coverage.json")
+
+    st.session_state["selected_file"] = str(target_path)
+    st.session_state["last_scan_results"] = results
+    st.session_state["last_report"] = report
+    st.session_state.pop("cached_suggestions", None)
+    st.session_state.pop("cached_suggestions_key", None)
+    return results, None
+
+
+def process_uploaded_file(uploaded_file):
+    """Save an uploaded Python file to storage/uploads and parse it."""
+    if not uploaded_file:
+        return None, "No file provided"
+    upload_dir = PROJECT_ROOT / "storage" / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = Path(uploaded_file.name).name
+    if not safe_name.endswith(".py"):
+        safe_name += ".py"
+
+    saved_path = upload_dir / safe_name
+    saved_path.write_bytes(uploaded_file.getbuffer())
+    return process_file_path(str(saved_path))
+
+
+def collect_missing_items(results: list) -> list:
+    """Collect all functions, classes, and class methods missing docstrings."""
+    missing = []
+    if not results:
+        return missing
+
+    for r in results:
+        fp = r.get("path") or r.get("file_path", "")
+        # Top-level functions
+        for fn in r.get("functions", []):
+            if not fn.get("has_docstring"):
+                missing.append({
+                    "id": f"func_{fn['name']}_{fn['lineno']}",
+                    "kind": "Function",
+                    "display_name": f"{fn['name']}()",
+                    "name": fn["name"],
+                    "class_name": None,
+                    "type": "function",
+                    "lineno": fn["lineno"],
+                    "body_lineno": fn.get("body_lineno"),
+                    "indent": fn.get("indent", 4),
+                    "file": fp,
+                    "existing_doc": fn.get("docstring"),
+                    "source_code": fn.get("source_code", ""),
+                    "raw_meta": fn
+                })
+
+        # Classes and inner methods
+        for cls in r.get("classes", []):
+            # Class docstring
+            if not cls.get("has_docstring"):
+                missing.append({
+                    "id": f"cls_{cls['name']}_{cls['lineno']}",
+                    "kind": "Class",
+                    "display_name": f"class {cls['name']}",
+                    "name": cls["name"],
+                    "class_name": cls["name"],
+                    "type": "class",
+                    "lineno": cls["lineno"],
+                    "body_lineno": cls.get("body_lineno"),
+                    "indent": cls.get("indent", 4),
+                    "file": fp,
+                    "existing_doc": cls.get("docstring"),
+                    "source_code": cls.get("source_code", ""),
+                    "raw_meta": cls
+                })
+
+            # Methods inside class
+            for m in cls.get("methods", []):
+                if not m.get("has_docstring"):
+                    missing.append({
+                        "id": f"method_{cls['name']}_{m['name']}_{m['lineno']}",
+                        "kind": "Method",
+                        "display_name": f"{cls['name']}.{m['name']}()",
+                        "name": m["name"],
+                        "class_name": cls["name"],
+                        "type": "method",
+                        "lineno": m["lineno"],
+                        "body_lineno": m.get("body_lineno"),
+                        "indent": m.get("indent", 8),
+                        "file": fp,
+                        "existing_doc": m.get("docstring"),
+                        "source_code": m.get("source_code", ""),
+                        "raw_meta": m
+                    })
+
+    return missing
+
+
+def compute_code_metrics(file_path: str):
+    """Compute complexity and maintainability index for a python file."""
+    with open(file_path, "r", encoding="utf-8") as f:
+        source = f.read()
+
+    metrics = []
+    try:
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                complexity = 1
+                for child in ast.walk(node):
+                    if isinstance(child, (ast.If, ast.For, ast.While, ast.With, ast.Try,
+                                          ast.ExceptHandler, ast.ListComp, ast.DictComp,
+                                          ast.SetComp, ast.GeneratorExp, ast.IfExp)):
+                        complexity += 1
+                metrics.append({
+                    "name": node.name,
+                    "type": "Function",
+                    "line": node.lineno,
+                    "complexity": complexity
+                })
+            elif isinstance(node, ast.ClassDef):
+                metrics.append({
+                    "name": node.name,
+                    "type": "Class",
+                    "line": node.lineno,
+                    "complexity": max(1, len(node.body))
+                })
+    except Exception:
+        pass
+
+    total_c = sum(m["complexity"] for m in metrics)
+    maintainability_index = max(15, min(100, 100 - (total_c * 2))) if metrics else 100
+    return maintainability_index, metrics
+
+
+def classify_issues(issues):
+    """Classify validation issues into errors and warnings."""
+    errors = []
+    warnings = []
+    for issue in issues:
+        text = str(issue)
+        if "D1" in text:
+            errors.append(issue)
+        else:
+            warnings.append(issue)
+    return errors, warnings
+
+
+# ----------------------------------------------------------------------------
+# 5. Session State Initialization
+# ----------------------------------------------------------------------------
+if "view" not in st.session_state:
+    st.session_state.view = "📊 Dashboard"
+
+if "selected_file" not in st.session_state:
+    st.session_state.selected_file = None
+
 if "last_scan_results" not in st.session_state:
     st.session_state.last_scan_results = None
 
 if "last_report" not in st.session_state:
     st.session_state.last_report = None
 
-if "active_scan_path" not in st.session_state:
-    st.session_state.active_scan_path = "examples/"
+if "rejected_items" not in st.session_state:
+    st.session_state.rejected_items = set()
 
-if "selected_file" not in st.session_state:
-    st.session_state.selected_file = None
-
-# Auto-scan built-in examples on first boot if no report exists
-if st.session_state.last_report is None:
-    try:
-        process_scan_path("examples/")
-    except Exception:
-        pass
-
-results = st.session_state.get("last_scan_results")
-report = st.session_state.get("last_report")
-
-# -----------------------------------------------------------------------------
-# SIDEBAR - PROJECT CONTROLS
-# -----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# 6. Sidebar Controls
+# ----------------------------------------------------------------------------
 with st.sidebar:
-    st.markdown("### ⚙️ Project Controls")
+    st.markdown("## 🤖 AI Code Reviewer")
+    st.caption("Automated AST Analysis & LLM Docstring Engine")
+    st.divider()
 
-    input_mode = st.radio(
-        "Source Input",
-        ["📁 Built-in Examples", "📤 Upload .py File", "📝 Paste Code"],
-        horizontal=False
+    st.markdown("### 📤 Upload Python File")
+    uploaded_file = st.file_uploader(
+        "Choose a Python file (.py)",
+        type=["py"],
+        key="main_file_uploader",
+        help="Upload any Python source file to analyze and generate docstrings."
     )
+
+    if uploaded_file is not None:
+        if st.session_state.get("current_uploaded_filename") != uploaded_file.name:
+            with st.spinner(f"Analyzing {uploaded_file.name}..."):
+                res, err = process_uploaded_file(uploaded_file)
+                if err:
+                    st.error(f"❌ {err}")
+                else:
+                    st.session_state["current_uploaded_filename"] = uploaded_file.name
+                    st.session_state.rejected_items = set()
+                    st.success(f"✅ Loaded {uploaded_file.name}")
+                    st.rerun()
 
     doc_style = st.selectbox(
-        "📝 Docstring Standard",
+        "📝 Docstring Style",
         ["google", "numpy", "rest"],
-        index=0,
-        help="Google style is recommended for readability and Sphinx/IDE integration."
+        help="Choose the docstring format to generate."
     )
 
-    if input_mode == "📁 Built-in Examples":
-        scan_path = st.text_input("Project / Folder Path", value="examples/")
-        if st.button("🚀 Scan Examples", use_container_width=True):
-            with st.spinner("Analyzing project AST..."):
-                res, err = process_scan_path(scan_path)
-                if err:
-                    st.error(f"❌ {err}")
-                else:
-                    st.success(f"✅ Analyzed {len(res)} file(s)")
-                    st.rerun()
-
-    elif input_mode == "📤 Upload .py File":
-        uploaded_py = st.file_uploader(
-            "Upload any Python file",
-            type=["py"],
-            help="Upload an external script to automatically generate docstrings and check PEP 257."
-        )
-        if uploaded_py is not None:
-            if st.session_state.get("last_uploaded_name") != uploaded_py.name:
-                with st.spinner(f"Analyzing {uploaded_py.name}..."):
-                    res, err = process_uploaded_file(uploaded_py)
-                    if err:
-                        st.error(f"❌ {err}")
-                    else:
-                        st.session_state["last_uploaded_name"] = uploaded_py.name
-                        st.success(f"✅ Analyzed {uploaded_py.name}")
-                        st.rerun()
-
-    elif input_mode == "📝 Paste Code":
-        pasted_text = st.text_area(
-            "Paste Python Snippet",
-            height=180,
-            placeholder="def calculate_roi(principal, rate, years):\n    return principal * (1 + rate) ** years"
-        )
-        if st.button("🚀 Analyze Snippet", use_container_width=True):
-            with st.spinner("Analyzing snippet..."):
-                res, err = process_pasted_code(pasted_text)
-                if err:
-                    st.error(f"❌ {err}")
-                else:
-                    st.success("✅ Snippet parsed successfully!")
-                    st.rerun()
+    # Demo fallback button
+    if not st.session_state.get("selected_file"):
+        if st.button("⚡ Try with Demo Code", use_container_width=True):
+            with st.spinner("Loading demo code..."):
+                load_demo_file()
+                st.session_state["current_uploaded_filename"] = "demo_sample.py"
+                st.session_state.rejected_items = set()
+                st.rerun()
 
     st.divider()
 
-    # File Explorer
-    st.markdown("### 📁 Scanned Files")
-    if report and "files" in report:
-        files = report["files"]
-        for fp, meta in files.items():
-            short_name = Path(fp).name
-            cov = meta.get("coverage_percent", 0.0)
-            badge = "🟢" if cov >= 80 else ("🟡" if cov >= 50 else "🔴")
-            is_active = (st.session_state.get("selected_file") == fp)
-            btn_label = f"{badge} {short_name} ({cov}%)"
+    # Active File Summary if loaded
+    selected_file = st.session_state.get("selected_file")
+    if selected_file and Path(selected_file).exists():
+        file_name = Path(selected_file).name
+        rep = st.session_state.get("last_report")
+        cov = rep["summary"]["coverage_percent"] if rep else 0.0
 
-            if st.button(btn_label, key=f"sidebar-file-{fp}", use_container_width=True):
-                st.session_state["selected_file"] = fp
-                st.rerun()
-    else:
-        st.info("No files parsed yet.")
+        st.markdown(f"**Current File:** `{file_name}`")
+        if cov >= 80:
+            st.markdown(f"<span class='status-badge-success'>🟢 {cov}% Documented</span>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<span class='status-badge-error'>🔴 {cov}% Documented</span>", unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# HERO NAVBAR BANNER
-# -----------------------------------------------------------------------------
-st.markdown("""
-<div class="hero-card">
-    <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 15px;">
-        <div>
-            <div style="display: flex; gap: 10px; margin-bottom: 8px;">
-                <span class="badge-pill badge-indigo">⚡ Llama 3.1 8B Engine</span>
-                <span class="badge-pill badge-emerald">🛡️ Python AST Parser</span>
-                <span class="badge-pill badge-amber">🧪 PEP 257 Conformance</span>
-            </div>
-            <h1 style="margin: 0; font-size: 2.3rem; font-weight: 800; background: linear-gradient(135deg, #FFFFFF 0%, #CBD5E1 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
-                AI-Powered Code Reviewer
-            </h1>
-            <p style="margin: 6px 0 0 0; color: #94A3B8; font-size: 1.02rem;">
-                Automated Documentation Generation, Type Inference & Code Quality Health Suite
+        with open(selected_file, "r", encoding="utf-8") as f:
+            code_text = f.read()
+
+        st.download_button(
+            label="📥 Download Python File",
+            data=code_text,
+            file_name=file_name,
+            mime="text/x-python",
+            use_container_width=True
+        )
+
+    st.divider()
+
+    # Navigation Buttons
+    st.markdown("### 🧭 Navigation")
+    for nav_label in ["📊 Dashboard", "🧩 Docstrings", "🧪 Validation", "📈 Coverage"]:
+        if st.button(nav_label, use_container_width=True, key=f"nav_{nav_label}"):
+            st.session_state.view = nav_label
+            st.rerun()
+
+    view = st.session_state.view
+
+# ----------------------------------------------------------------------------
+# 7. Header
+# ----------------------------------------------------------------------------
+st.markdown('<h1 style="color: #1E293B; font-size: 2.3rem; font-weight: 800; margin-bottom: 0.2rem;">🤖 AI-Powered Code Reviewer</h1>', unsafe_allow_html=True)
+st.caption("Engineered by Pavithra Kotha — Automated AST Code Intelligence & Docstring Generation")
+st.divider()
+
+results = st.session_state.get("last_scan_results")
+report = st.session_state.get("last_report")
+selected_file = st.session_state.get("selected_file")
+
+# ----------------------------------------------------------------------------
+# 8. View: DASHBOARD
+# ----------------------------------------------------------------------------
+if view == "📊 Dashboard":
+    if not selected_file or not results:
+        st.markdown("""
+        <div class="hero-box">
+            <h2 style="color: #3730A3; margin-top: 0;">👋 Welcome to AI-Powered Code Reviewer</h2>
+            <p style="color: #4338CA; font-size: 1.05rem;">
+                Review your Python code quality, detect missing docstrings across functions, classes, and methods, 
+                and automatically generate Google, NumPy, or reST-compliant documentation with Llama 3.1.
             </p>
         </div>
-        <div style="text-align: right;">
-            <span style="font-size: 0.85rem; color: #64748B;">Architect & Developer</span>
-            <div style="font-weight: 700; font-size: 1.15rem; color: #E2E8F0;">Pavithra Kotha</div>
-            <span class="badge-pill badge-emerald" style="margin-top: 4px;">● System Online</span>
-        </div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# TOP-LEVEL NAVIGATION TABS
-# -----------------------------------------------------------------------------
-tab_dash, tab_doc, tab_val, tab_metrics, tab_export = st.tabs([
-    "📊 Executive Dashboard",
-    "🧩 AI Docstring Studio",
-    "🧪 PEP 257 Validator",
-    "📐 Code Health & Complexity",
-    "📦 Export & Downloads"
-])
+        dash_col1, dash_col2 = st.columns(2)
+        with dash_col1:
+            st.markdown('<div class="ui-card">', unsafe_allow_html=True)
+            st.markdown("### 📤 Upload Your Python File")
+            st.write("Upload any `.py` source code file to begin analysis.")
+            quick_upload = st.file_uploader("Select .py file", type=["py"], key="dash_hero_uploader")
+            if quick_upload is not None:
+                with st.spinner(f"Analyzing {quick_upload.name}..."):
+                    process_uploaded_file(quick_upload)
+                    st.session_state["current_uploaded_filename"] = quick_upload.name
+                    st.session_state.rejected_items = set()
+                    st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
-# =============================================================================
-# TAB 1: EXECUTIVE DASHBOARD
-# =============================================================================
-with tab_dash:
-    if not report or not results:
-        st.info("👋 Scan the built-in examples or upload a `.py` file from the sidebar to inspect code health.")
+        with dash_col2:
+            st.markdown('<div class="ui-card">', unsafe_allow_html=True)
+            st.markdown("### ⚡ Test with Demo Code")
+            st.write("Click below to test the analyzer with a pre-configured sample Python file.")
+            if st.button("🚀 Load Sample Python File", use_container_width=True, key="dash_load_demo"):
+                with st.spinner("Loading demo file..."):
+                    load_demo_file()
+                    st.session_state["current_uploaded_filename"] = "demo_sample.py"
+                    st.session_state.rejected_items = set()
+                    st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+
     else:
-        summary = report.get("summary", {})
-        total_items = summary.get("total_items", 0)
-        total_docs = summary.get("total_docs", 0)
+        summary = report["summary"] if report else {"coverage_percent": 0, "total_items": 0, "total_docs": 0}
         cov_pct = summary.get("coverage_percent", 0.0)
-        total_files = len(report.get("files", {}))
+        tot_items = summary.get("total_items", 0)
+        doc_count = summary.get("total_docs", 0)
+        missing_count = tot_items - doc_count
 
-        # Overall Maintainability score
-        selected_file = st.session_state.get("selected_file")
-        main_index = 85.0
-        if selected_file and Path(selected_file).exists():
-            try:
-                main_index, _ = compute_code_metrics(selected_file)
-            except Exception:
-                pass
-
-        # 4 Core KPI Metric Cards
+        # Overview Metrics Cards
         col1, col2, col3, col4 = st.columns(4)
+        col1.metric("📄 File Name", Path(selected_file).name)
+        col2.metric("📦 Total Items", tot_items, help="All functions, classes, and methods parsed by AST")
+        col3.metric("✅ Documented", f"{doc_count} / {tot_items}")
+        col4.metric("📊 Coverage %", f"{cov_pct}%")
 
-        with col1:
-            st.markdown(f"""
-            <div class="stat-card">
-                <span class="badge-pill badge-indigo">Files</span>
-                <div style="font-size: 2.2rem; font-weight: 800; color: #F8FAFC; margin-top: 8px;">{total_files}</div>
-                <div style="font-size: 0.85rem; color: #94A3B8;">Source files parsed</div>
-            </div>
-            """, unsafe_allow_html=True)
+        st.progress(cov_pct / 100.0)
 
-        with col2:
-            st.markdown(f"""
-            <div class="stat-card">
-                <span class="badge-pill badge-emerald">Coverage</span>
-                <div style="font-size: 2.2rem; font-weight: 800; color: #34d399; margin-top: 8px;">{cov_pct}%</div>
-                <div style="font-size: 0.85rem; color: #94A3B8;">{total_docs} of {total_items} items documented</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        with col3:
-            st.markdown(f"""
-            <div class="stat-card">
-                <span class="badge-pill badge-amber">Maintainability</span>
-                <div style="font-size: 2.2rem; font-weight: 800; color: #fbbf24; margin-top: 8px;">{round(main_index, 1)} / 100</div>
-                <div style="font-size: 0.85rem; color: #94A3B8;">Code health index</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        with col4:
-            health_color = "#34d399" if cov_pct >= 70 else "#fb7185"
-            health_label = "Optimal" if cov_pct >= 70 else "Action Needed"
-            st.markdown(f"""
-            <div class="stat-card">
-                <span class="badge-pill badge-rose">Status</span>
-                <div style="font-size: 2.2rem; font-weight: 800; color: {health_color}; margin-top: 8px;">{health_label}</div>
-                <div style="font-size: 0.85rem; color: #94A3B8;">Documentation readiness</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # Progress Meter
-        st.markdown("#### 🎯 Overall Documentation Health")
-        st.progress(min(1.0, max(0.0, cov_pct / 100)))
+        # Quick Callout to Action
+        if missing_count > 0:
+            st.warning(f"⚠️ **{missing_count} item(s) are missing docstrings!** Click **🧩 Docstrings** in the sidebar or below to review and generate AI docstrings.")
+            if st.button("👉 Go to Docstring Review & Generation", use_container_width=True):
+                st.session_state.view = "🧩 Docstrings"
+                st.rerun()
+        else:
+            st.success("🎉 All functions, classes, and methods have complete docstrings!")
 
         st.divider()
 
-        # AST Structure Explorer
-        st.markdown("### 🧠 AST Syntax Tree Explorer")
-        st.caption("Expand any file below to explore detected functions, classes, arguments, and type signatures:")
+        # AST Parsing Structure
+        st.markdown("### 🧠 AST Code Structure")
+        parsed = results[0]
+        structure_lines = [f"# File: {Path(parsed['path']).name}", ""]
 
-        for r in results:
-            fp = r.get("path")
-            file_name = Path(fp).name
-            fns = r.get("functions", [])
-            classes = r.get("classes", [])
+        for fn in parsed.get("functions", []):
+            args_str = ", ".join(a["name"] for a in fn.get("args", []))
+            doc_status = "✅ Has Docstring" if fn["has_docstring"] else "❌ Missing Docstring"
+            structure_lines.append(f"def {fn['name']}({args_str}):  # {doc_status}")
 
-            with st.expander(f"📄 {file_name} — {len(fns)} functions, {len(classes)} classes", expanded=True):
-                col_f, col_c = st.columns(2)
+        for cls in parsed.get("classes", []):
+            c_status = "✅ Has Docstring" if cls["has_docstring"] else "❌ Missing Docstring"
+            structure_lines.append(f"\nclass {cls['name']}:  # {c_status}")
+            for m in cls.get("methods", []):
+                m_args = ", ".join(a["name"] for a in m.get("args", []))
+                m_status = "✅ Has Docstring" if m["has_docstring"] else "❌ Missing Docstring"
+                structure_lines.append(f"    def {m['name']}({m_args}):  # {m_status}")
 
-                with col_f:
-                    st.markdown("**Functions & Signatures:**")
-                    if fns:
-                        for fn in fns:
-                            doc_chip = "🟢 Documented" if fn.get("has_docstring") else "🔴 Missing Docstring"
-                            args_str = ", ".join(f"{a['name']}: {a.get('annotation') or 'Any'}" for a in fn.get("args", []))
-                            ret_str = fn.get("returns") or "Any"
-                            st.markdown(f"- `{fn['name']}({args_str}) -> {ret_str}` ({doc_chip})")
-                    else:
-                        st.caption("No standalone functions.")
+        st.code("\n".join(structure_lines), language="python")
 
-                with col_c:
-                    st.markdown("**Classes & Methods:**")
-                    if classes:
-                        for c in classes:
-                            st.markdown(f"- **class `{c['name']}`**")
-                            for m in c.get("methods", []):
-                                m_doc = "🟢" if m.get("has_docstring") else "🔴"
-                                st.markdown(f"  └─ `{m['name']}()` {m_doc}")
-                    else:
-                        st.caption("No class declarations.")
+        st.divider()
 
-# =============================================================================
-# TAB 2: AI DOCSTRING STUDIO
-# =============================================================================
-with tab_doc:
-    st.markdown("### 🧩 AI Docstring Review Studio")
-    st.caption(f"Powered by **Llama 3.1 8B-Instant** with source code analysis and type inference (Standard: **{doc_style.upper()}**).")
+        # Code Complexity & Quality
+        st.markdown("### 📐 Code Quality & Complexity")
+        mi, metrics = compute_code_metrics(selected_file)
+        col_m1, col_m2 = st.columns([1, 3])
+        col_m1.metric("🎯 Maintainability Index", f"{round(mi, 1)} / 100")
+        with col_m2:
+            if metrics:
+                st.dataframe(pd.DataFrame(metrics), use_container_width=True)
 
-    if not results:
-        st.info("Run a scan or upload a file from the sidebar to generate docstrings.")
+# ----------------------------------------------------------------------------
+# 9. View: DOCSTRINGS
+# ----------------------------------------------------------------------------
+elif view == "🧩 Docstrings":
+    st.markdown("## 🧩 Docstring Review & In-Place Code Generation")
+
+    if not selected_file or not results:
+        st.info("ℹ️ Please upload a Python file in the sidebar to review and generate docstrings.")
     else:
-        all_callables = get_all_callables(results)
-        missing_items = [it for it in all_callables if not it.get("has_docstring")]
-
-        col_search, col_stats = st.columns([3, 1])
-        with col_search:
-            search_query = st.text_input("🔍 Filter functions or methods by name", placeholder="Type name to filter...")
-        with col_stats:
-            st.metric("Missing Docstrings", len(missing_items), delta=f"{len(all_callables) - len(missing_items)} documented", delta_color="normal")
+        raw_missing = collect_missing_items(results)
+        # Filter out rejected items
+        missing_items = [it for it in raw_missing if it["id"] not in st.session_state.rejected_items]
 
         if not missing_items:
-            st.success("🎉 Outstanding! All detected functions and class methods have docstrings.")
+            st.success("🎉 **All functions, classes, and methods are fully documented!**")
+            with open(selected_file, "r", encoding="utf-8") as f:
+                full_code = f.read()
+
+            st.download_button(
+                label="📥 Download Updated Python File",
+                data=full_code,
+                file_name=Path(selected_file).name,
+                mime="text/x-python",
+                use_container_width=True
+            )
+            with st.expander("👀 View Complete Documented Source Code"):
+                st.code(full_code, language="python")
         else:
-            # Build suggestions cache
-            cache_key = f"{doc_style}_{len(results)}_{len(missing_items)}"
+            # Cache docstrings by file mtime and style
+            mtime = os.path.getmtime(selected_file)
+            cache_key = f"{doc_style}_{selected_file}_{mtime}_{len(missing_items)}"
+
             if st.session_state.get("cached_suggestions_key") != cache_key:
-                with st.spinner("🤖 Analyzing source code & generating AI docstrings with Groq..."):
-                    generated_suggs = {}
-                    for item in missing_items:
-                        fp = item.get("file")
+                with st.spinner("🤖 Analyzing code & generating AI docstrings with Groq Llama 3.1..."):
+                    generated_map = {}
+                    for it in missing_items:
                         try:
-                            doc = generate_docstring(item, style=doc_style)
+                            generated_map[it["id"]] = generate_docstring(it["raw_meta"], style=doc_style)
                         except Exception as e:
-                            doc = f'"""\nExecute `{item["name"]}` operations.\n"""'
-
-                        if fp not in generated_suggs:
-                            generated_suggs[fp] = []
-
-                        generated_suggs[fp].append({
-                            "item": item,
-                            "doc": doc
-                        })
-
-                    st.session_state["cached_suggestions"] = generated_suggs
+                            generated_map[it["id"]] = f'"""\nExecute `{it["name"]}` operations.\n"""'
+                    st.session_state["cached_suggestions"] = generated_map
                     st.session_state["cached_suggestions_key"] = cache_key
 
-            suggestions_by_file = st.session_state.get("cached_suggestions", {})
+            cached_docs = st.session_state.get("cached_suggestions", {})
 
-            for fp, entries in suggestions_by_file.items():
-                file_short = Path(fp).name
-                st.markdown(f"#### 📄 File: `{file_short}`")
+            # Attach generated docstrings to items
+            for it in missing_items:
+                it["generated_doc"] = cached_docs.get(it["id"], f'"""\nExecute `{it["name"]}` operations.\n"""')
 
-                for idx, entry in enumerate(entries):
-                    item = entry["item"]
-                    gen_doc = entry["doc"]
-                    fn_name = item["name"]
-                    parent = item.get("parent_class")
-                    display_name = f"{parent}.{fn_name}" if parent else fn_name
-
-                    # Apply search filter
-                    if search_query and search_query.lower() not in display_name.lower():
-                        continue
-
-                    callable_type = "Class Method" if parent else "Top-level Function"
-                    complexity = item.get("complexity", 1)
-
-                    st.markdown(f"""
-                    <div class="doc-review-card">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                            <div>
-                                <span class="badge-pill badge-indigo">{callable_type}</span>
-                                <span class="badge-pill badge-rose" style="margin-left: 6px;">Missing Docstring</span>
-                                <span style="font-weight: 700; font-size: 1.15rem; color: #F8FAFC; margin-left: 10px;">
-                                    <code>{display_name}()</code>
-                                </span>
-                            </div>
-                            <div style="color: #94A3B8; font-size: 0.85rem;">
-                                Line {item.get('lineno', '?')} &nbsp;•&nbsp; Complexity: <strong style="color: #fbbf24;">{complexity}</strong>
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
-
-                    c_left, c_right = st.columns(2)
-
-                    with c_left:
-                        st.markdown("**Original Source Code:**")
-                        code_preview = item.get("code") or f"def {fn_name}(...):\n    # Source not captured"
-                        st.code(code_preview, language="python")
-
-                    with c_right:
-                        st.markdown(f"**AI Suggested Docstring ({doc_style.upper()}):**")
-                        st.code(gen_doc, language="python")
-
-                    # Action buttons
-                    b_accept, b_copy, b_reject = st.columns([2, 2, 1])
-
-                    with b_accept:
-                        if st.button("✅ Apply Docstring to Code", key=f"btn_accept_{fp}_{item['lineno']}_{idx}", use_container_width=True):
-                            try:
-                                apply_docstring_to_file(
-                                    file_path=item["file"],
-                                    lineno=item["lineno"],
-                                    indent=item["indent"],
-                                    docstring=gen_doc
-                                )
-                                # Re-scan to refresh states
-                                active_path = st.session_state.get("active_scan_path", "examples/")
-                                process_scan_path(active_path)
-                                st.success(f"✅ Successfully inserted docstring into `{file_short}`!")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Failed to insert docstring: {e}")
-
-                    with b_copy:
-                        st.caption("💡 Click icon at top-right of docstring box to copy.")
-
-                    with b_reject:
-                        if st.button("❌ Dismiss", key=f"btn_dismiss_{fp}_{item['lineno']}_{idx}", use_container_width=True):
-                            st.info("Dismissed.")
-
-                    st.markdown("</div>", unsafe_allow_html=True)
-
-# =============================================================================
-# TAB 3: PEP 257 VALIDATOR
-# =============================================================================
-with tab_val:
-    st.markdown("### 🧪 PEP 257 Docstring Compliance Suite")
-    st.caption("Automated docstring style verification using standard `pydocstyle` rule validation.")
-
-    active_path = st.session_state.get("active_scan_path", "examples/")
-
-    col_btn, col_info = st.columns([1, 3])
-    with col_btn:
-        run_val_click = st.button("▶️ Run Compliance Check", use_container_width=True)
-    with col_info:
-        st.write(f"Targeting: `{active_path}`")
-
-    if run_val_click:
-        with st.spinner("Analyzing PEP 257 rules..."):
-            st.session_state["validation_result"] = run_pydocstyle(active_path)
-
-    val_res = st.session_state.get("validation_result")
-
-    if not val_res:
-        st.info("Click **Run Compliance Check** to evaluate PEP 257 formatting violations.")
-    else:
-        issues = val_res.get("issues", [])
-        errors, warnings = classify_issues(issues)
-
-        m1, m2, m3 = st.columns(3)
-        with m1:
-            st.metric("Missing Docstrings (D1xx)", len(errors))
-        with m2:
-            st.metric("Formatting Warnings (D2-D4xx)", len(warnings))
-        with m3:
-            status_chip = "✅ Passed All Rules" if not issues else "⚠️ Non-Compliant"
-            st.metric("Overall Compliance", status_chip)
-
-        if not issues:
-            st.success("🎉 Pristine! Zero PEP 257 violations detected.")
-        else:
-            if errors:
-                st.markdown("#### 🔴 Missing Docstring Violations (D1xx)")
-                for err in errors:
-                    st.markdown(f"""
-                    <div style="background: rgba(244, 63, 94, 0.1); border-left: 4px solid #f43f5e; padding: 10px 14px; border-radius: 8px; margin-bottom: 8px; font-family: monospace; color: #fecdd3; font-size: 0.88rem;">
-                        {err}
-                    </div>
-                    """, unsafe_allow_html=True)
-
-            if warnings:
-                st.markdown("#### 🟡 Formatting & Convention Warnings (D2xx - D4xx)")
-                for warn in warnings:
-                    st.markdown(f"""
-                    <div style="background: rgba(245, 158, 11, 0.1); border-left: 4px solid #f59e0b; padding: 10px 14px; border-radius: 8px; margin-bottom: 8px; font-family: monospace; color: #fef3c7; font-size: 0.88rem;">
-                        {warn}
-                    </div>
-                    """, unsafe_allow_html=True)
-
-# =============================================================================
-# TAB 4: CODE HEALTH & COMPLEXITY METRICS
-# =============================================================================
-with tab_metrics:
-    st.markdown("### 📐 Code Health & Complexity Analytics")
-    st.caption("Cyclomatic complexity and Maintainability Index computed using AST branch heuristics.")
-
-    selected_file = st.session_state.get("selected_file")
-
-    if not selected_file or not Path(selected_file).exists():
-        st.info("Select a file from the sidebar to inspect detailed code metrics.")
-    else:
-        file_name = Path(selected_file).name
-        st.markdown(f"#### Detailed Metrics for: `{file_name}`")
-
-        try:
-            mi, metrics = compute_code_metrics(selected_file)
-
-            c_gauge, c_details = st.columns([1, 2])
-
-            with c_gauge:
-                grade = "A (Optimal)" if mi >= 80 else ("B (Good)" if mi >= 65 else ("C (Moderate)" if mi >= 50 else "D (Refactor)"))
-                grade_color = "#34d399" if mi >= 80 else ("#60a5fa" if mi >= 65 else "#fbbf24")
-
-                st.markdown(f"""
-                <div class="stat-card" style="text-align: center; padding: 2rem 1.5rem;">
-                    <span class="badge-pill badge-indigo">Maintainability Index</span>
-                    <div style="font-size: 3.2rem; font-weight: 800; color: {grade_color}; margin: 12px 0;">{round(mi, 1)}</div>
-                    <div style="font-size: 1.05rem; font-weight: 700; color: #E2E8F0;">Grade: {grade}</div>
-                    <div style="font-size: 0.82rem; color: #94A3B8; margin-top: 6px;">Based on cyclomatic complexity and structural branching</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            with c_details:
-                st.markdown("**Cyclomatic Complexity Distribution:**")
-                if metrics:
-                    table_rows = []
-                    for m in metrics:
-                        comp = m["complexity"]
-                        risk = "🟢 Low" if comp <= 5 else ("🟡 Moderate" if comp <= 10 else "🔴 High")
-                        table_rows.append({
-                            "Symbol": m["name"],
-                            "Type": m["type"],
-                            "Line": m["line"],
-                            "Complexity Score": comp,
-                            "Risk Level": risk
-                        })
-                    st.dataframe(pd.DataFrame(table_rows), use_container_width=True)
-                else:
-                    st.caption("No functions or classes found in this file.")
-
-        except Exception as e:
-            st.error(f"Error computing code metrics: {e}")
-
-# =============================================================================
-# TAB 5: EXPORT & DOWNLOADS
-# =============================================================================
-with tab_export:
-    st.markdown("### 📦 Export & Artifact Delivery")
-    st.caption("Export audit reports or download modified source files with newly injected docstrings.")
-
-    if not results:
-        st.info("Run a scan or upload a file first to export data.")
-    else:
-        export_rows = build_export_rows(results)
-        df_export = pd.DataFrame(export_rows)
-
-        col_dl1, col_dl2, col_dl3 = st.columns(3)
-
-        with col_dl1:
-            st.markdown('<div class="stat-card">', unsafe_allow_html=True)
-            st.markdown("#### 📥 CSV Coverage Report")
-            st.write("Full tabular breakdown with file paths, functions, docstring status, and complexity.")
-            csv_bytes = df_export.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                label="Download CSV Report",
-                data=csv_bytes,
-                file_name="code_review_coverage.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        with col_dl2:
-            st.markdown('<div class="stat-card">', unsafe_allow_html=True)
-            st.markdown("#### 📥 JSON Audit Report")
-            st.write("Machine-readable JSON schema report suitable for CI/CD pipeline artifact ingestion.")
-            json_str = json.dumps(report, indent=2)
-            st.download_button(
-                label="Download JSON Audit",
-                data=json_str,
-                file_name="docstring_audit_report.json",
-                mime="application/json",
-                use_container_width=True
-            )
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        with col_dl3:
-            st.markdown('<div class="stat-card">', unsafe_allow_html=True)
-            st.markdown("#### 📥 Download Analyzed Code")
-            selected_file = st.session_state.get("selected_file")
-            if selected_file and Path(selected_file).exists():
-                code_content = Path(selected_file).read_text(encoding="utf-8")
-                st.write(f"Download updated file: `{Path(selected_file).name}`")
+            # Top Toolbar
+            col_bar1, col_bar2, col_bar3 = st.columns([2, 1, 1])
+            with col_bar1:
+                st.markdown(f"**Found {len(missing_items)} item(s) missing documentation** (Style: `{doc_style.upper()}`)")
+            with col_bar2:
+                if st.button("✨ Accept All Docstrings", use_container_width=True, key="btn_accept_all"):
+                    with st.spinner("Applying all docstrings to code..."):
+                        # Sort items by lineno descending so line shifts do not disrupt subsequent insertions
+                        sorted_items = sorted(missing_items, key=lambda x: x["lineno"], reverse=True)
+                        for it in sorted_items:
+                            apply_docstring_to_file(
+                                file_path=it["file"],
+                                lineno=it["lineno"],
+                                indent=it["indent"],
+                                docstring=it["generated_doc"],
+                                body_lineno=it.get("body_lineno")
+                            )
+                        process_file_path(selected_file)
+                        st.success(f"✅ Successfully applied all {len(sorted_items)} docstrings!")
+                        st.rerun()
+            with col_bar3:
+                with open(selected_file, "r", encoding="utf-8") as f:
+                    current_code = f.read()
                 st.download_button(
-                    label=f"Download {Path(selected_file).name}",
-                    data=code_content,
+                    label="📥 Download File",
+                    data=current_code,
                     file_name=Path(selected_file).name,
                     mime="text/x-python",
                     use_container_width=True
                 )
-            else:
-                st.write("Select a file from the sidebar to download its latest source.")
-            st.markdown('</div>', unsafe_allow_html=True)
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("#### 📋 Preview Table")
-        st.dataframe(df_export, use_container_width=True)
+            search_query = st.text_input("🔍 Filter functions or classes", placeholder="Type to search...")
+
+            st.divider()
+
+            # Render Each Missing Item Card
+            for idx, it in enumerate(missing_items):
+                if search_query and search_query.lower() not in it["display_name"].lower():
+                    continue
+
+                st.markdown('<div class="ui-card">', unsafe_allow_html=True)
+                title_col, badge_col = st.columns([3, 1])
+                with title_col:
+                    st.markdown(f"#### `{it['display_name']}`")
+                with badge_col:
+                    st.markdown(f"<span class='status-badge-error'>Missing Docstring</span>", unsafe_allow_html=True)
+
+                col_left, col_right = st.columns(2)
+                with col_left:
+                    st.markdown("**Original Implementation**")
+                    if it.get("source_code"):
+                        st.code(it["source_code"], language="python")
+                    else:
+                        st.code(f"Line {it['lineno']}: {it['name']}", language="python")
+
+                with col_right:
+                    st.markdown(f"**AI Suggested Docstring ({doc_style})**")
+                    st.code(it["generated_doc"], language="python")
+
+                btn_col1, btn_col2 = st.columns(2)
+                with btn_col1:
+                    if st.button("✅ Accept & Insert into Code", key=f"btn_acc_{it['id']}", use_container_width=True):
+                        try:
+                            apply_docstring_to_file(
+                                file_path=it["file"],
+                                lineno=it["lineno"],
+                                indent=it["indent"],
+                                docstring=it["generated_doc"],
+                                body_lineno=it.get("body_lineno")
+                            )
+                            process_file_path(selected_file)
+                            st.success(f"✅ Docstring inserted for {it['display_name']}!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to apply: {e}")
+
+                with btn_col2:
+                    if st.button("❌ Decline", key=f"btn_rej_{it['id']}", use_container_width=True):
+                        st.session_state.rejected_items.add(it["id"])
+                        st.rerun()
+
+                st.markdown("</div>", unsafe_allow_html=True)
+
+# ----------------------------------------------------------------------------
+# 10. View: VALIDATION
+# ----------------------------------------------------------------------------
+elif view == "🧪 Validation":
+    st.markdown("## 🧪 PEP 257 Docstring Validation")
+
+    if not selected_file:
+        st.info("ℹ️ Please upload a Python file in the sidebar to run validation.")
+    else:
+        st.write(f"Validating **{Path(selected_file).name}** using `pydocstyle` standards.")
+
+        if st.button("▶️ Run PEP 257 Validation", use_container_width=True, key="btn_run_val"):
+            with st.spinner("Running pydocstyle checks..."):
+                st.session_state["validation_result"] = run_pydocstyle(selected_file)
+
+        result = st.session_state.get("validation_result")
+        if result is not None:
+            issues = result.issues if hasattr(result, "issues") else list(result)
+            errors, warnings = classify_issues(issues)
+
+            val_col1, val_col2, val_col3 = st.columns(3)
+            val_col1.metric("🔴 Missing Docstrings", len(errors))
+            val_col2.metric("🟡 Style Warnings", len(warnings))
+            val_col3.metric("Status", "✅ Passed" if result.passed else "❌ Issues Found")
+
+            if errors:
+                st.markdown("### 🔴 Missing Docstring Violations")
+                for err in errors:
+                    st.error(str(err))
+
+            if warnings:
+                st.markdown("### 🟡 Style & Formatting Violations")
+                for w in warnings:
+                    st.warning(str(w))
+
+            if not errors and not warnings:
+                st.success("🎉 Complies 100% with PEP 257 standards!")
+
+# ----------------------------------------------------------------------------
+# 11. View: COVERAGE
+# ----------------------------------------------------------------------------
+elif view == "📈 Coverage":
+    st.markdown("## 📈 Coverage & Quality Metrics")
+
+    if not selected_file or not report:
+        st.info("ℹ️ Please upload a Python file in the sidebar to view coverage.")
+    else:
+        summary = report["summary"]
+        cov_pct = summary.get("coverage_percent", 0.0)
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("📦 Total Items", summary.get("total_items", 0))
+        c2.metric("✅ Documented Items", summary.get("total_docs", 0))
+        c3.metric("📊 Coverage", f"{cov_pct}%")
+
+        st.progress(cov_pct / 100.0)
+        st.divider()
+
+        st.markdown("### 🔍 Item Breakdown")
+        file_meta = report.get("files", {}).get(selected_file, {})
+        items = file_meta.get("items", [])
+        if items:
+            df = pd.DataFrame(items)
+            df["Status"] = df["has_doc"].apply(lambda x: "✅ Documented" if x else "❌ Missing")
+            st.dataframe(df[["type", "name", "lineno", "Status"]], use_container_width=True)
