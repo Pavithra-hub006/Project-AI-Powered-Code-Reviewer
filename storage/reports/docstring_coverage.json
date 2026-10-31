@@ -1,36 +1,59 @@
 {
   "files": {
-    "C:\\Users\\pavit\\OneDrive\\Desktop\\AI_Powered_chatbot\\storage\\uploads\\graphs.py": {
-      "total_items": 3,
+    "C:\\Users\\pavit\\OneDrive\\Desktop\\AI_Powered_chatbot\\storage\\uploads\\demo_sample.py": {
+      "total_items": 5,
       "doc_count": 0,
       "coverage_percent": 0.0,
       "items": [
         {
+          "type": "function",
+          "name": "calculate_average",
+          "lineno": 3,
+          "has_doc": false
+        },
+        {
+          "type": "function",
+          "name": "compute_tax",
+          "lineno": 12,
+          "has_doc": false
+        },
+        {
           "type": "class",
-          "name": "Graph",
-          "lineno": 30,
+          "name": "DataProcessor",
+          "lineno": 18,
           "has_doc": false
         },
         {
           "type": "method",
-          "class": "Graph",
+          "class": "DataProcessor",
           "name": "__init__",
-          "lineno": 31,
+          "lineno": 19,
           "has_doc": false
         },
         {
           "type": "method",
-          "class": "Graph",
-          "name": "insert",
-          "lineno": 34,
+          "class": "DataProcessor",
+          "name": "process_records",
+          "lineno": 22,
           "has_doc": false
         }
       ]
     }
   },
   "summary": {
-    "total_items": 3,
+    "total_items": 5,
     "total_docs": 0,
-    "coverage_percent": 0.0
+    "total_functions": 2,
+    "documented": 0,
+    "coverage_percent": 0.0,
+    "meets_threshold": true
+  },
+  "aggregate": {
+    "total_items": 5,
+    "total_docs": 0,
+    "total_functions": 2,
+    "documented": 0,
+    "coverage_percent": 0.0,
+    "meets_threshold": true
   }
 }

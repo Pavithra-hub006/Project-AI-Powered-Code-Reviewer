@@ -1,211 +1,166 @@
-# AI-Powered Code Reviewer 🤖🧠
+# AI-Powered Code Reviewer & Docstring Engine 🤖🧠
 
-![Python](https://img.shields.io/badge/Python-3.x-blue)
-![AI](https://img.shields.io/badge/AI-NLP-orange)
-![LLM](https://img.shields.io/badge/LLM-Transformer--Based-green)
-![Status](https://img.shields.io/badge/Status-Active-success)
-![License](https://img.shields.io/badge/License-MIT-lightgrey)
-
----
-
-## 📌 Project Description
-
-**AI-Powered Code Reviewer** is an intelligent software application that automatically reviews source code and provides **context-aware feedback, explanations, and improvement suggestions** using **Artificial Intelligence, Natural Language Processing (NLP), and Large Language Models (LLMs)**.
-
-The system simulates a real-world automated code review assistant capable of analyzing programming logic, structure, readability, and best practices.
-It is designed for **academic projects**, **Infosys certification submission**, and **local execution for experimentation with AI-driven software quality tools**.
+![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
+![Streamlit](https://img.shields.io/badge/Streamlit-1.28+-FF4B4B.svg)
+![LangChain](https://img.shields.io/badge/LangChain-1.0+-green.svg)
+![LLM](https://img.shields.io/badge/LLM-Llama--3.1--8B--Instant-orange.svg)
+![Tests](https://img.shields.io/badge/Tests-28%20Passed-success.svg)
+![License](https://img.shields.io/badge/License-MIT-lightgrey.svg)
 
 ---
 
-## 🚀 Features
+## 📌 Project Overview
 
-* 🔍 Automated source code analysis
-* 🧠 AI-generated code review comments
-* ✍️ Natural language explanations of code logic
-* 📈 Suggestions for optimization and best practices
-* ⚙️ Configurable LLM backend
-* 📄 Human-readable review output
-* 🧪 Test report generation and summarization
-* 🗂 Modular and scalable project structure
+**AI-Powered Code Reviewer** is an intelligent developer tooling application that statically inspects Python source files, identifies missing documentation across functions, classes, and methods, and automatically generates standard-compliant docstrings (**Google**, **NumPy**, or **reST**) using **Llama 3.1** via **Groq Cloud** and **LangChain**.
+
+Rather than relying on unconstrained LLM code rewrites (which risk introducing logic regressions), this project utilizes a **hybrid architecture**:
+1. **Deterministic Static Analysis (AST):** Safe code parsing and exact indentation-aware insertion.
+2. **LLM Semantic Inference:** Generates structured semantic docstring content (summary, parameter descriptions, returns, and raises).
 
 ---
 
-## 🧠 Techniques Used
+## 🚀 Key Features
 
-### 🔹 Natural Language Processing (NLP)
-
-* Converts code structure into meaningful text representations
-* Understands syntax, semantics, and intent of code
-* Generates explanations and feedback in natural language
-
-### 🔹 Prompt Engineering
-
-* Carefully structured prompts for:
-
-  * Code review
-  * Error explanation
-  * Improvement suggestions
-* Ensures consistent and reliable AI responses
-* Reduces ambiguity and irrelevant outputs
-
-### 🔹 LLM-Based Text Generation
-
-* Uses transformer-based language models
-* Generates:
-
-  * Code explanations
-  * Review comments
-  * Best-practice suggestions
-* Produces developer-friendly feedback
+* **🔍 AST-Based Code Analysis:** Parses Python Abstract Syntax Trees (`ast`) without executing untrusted code, detecting functions, classes, inner methods, type annotations, and exceptions.
+* **🧠 AI-Powered Docstring Generation:** Uses Groq's fast Llama 3.1 model to generate context-aware summaries and parameter mappings.
+* **📝 Multi-Style Docstring Support:** Formats documentation in standard **Google**, **NumPy**, or **reST (Sphinx)** styles.
+* **✍️ In-Place One-Click Code Insertion:** Automatically inserts accepted docstrings directly into the file on disk after the signature colon `:` with matching indentation.
+* **📥 Instant Export / Download:** Download the fully documented `.py` file directly from the Streamlit web browser.
+* **📊 Documentation Coverage Tracking:** Visual metrics, percentage coverage calculations, and color-coded progress indicators.
+* **🧪 PEP 257 Compliance Auditing:** Automated style validation via `pydocstyle` detecting missing docstrings and formatting violations.
+* **📐 Complexity & Maintainability Metrics:** Calculates function-level **Cyclomatic Complexity** and overall **Maintainability Index**.
+* **⚡ Demo Mode:** One-click pre-loaded demo code for quick evaluation on Streamlit Cloud without requiring file uploads.
 
 ---
 
 ## 🛠️ Tech Stack
 
-### 🔹 Programming Language
-
-* **Python 3.x**
-
-### 🔹 Libraries / Frameworks
-
-* `transformers`
-* `torch`
-* `langchain`
-* `json`
-* `os`
-* `pytest`
-
-### 🔹 AI / ML Technologies
-
-* Natural Language Processing (NLP)
-* Transformer-based Large Language Models (LLMs)
-* Prompt-driven AI workflows
-
----
-
-## 🤖 LLM Details
-
-* Uses **transformer-based Large Language Models**
-* Supports models such as:
-
-  * GPT-style LLMs
-  * Hugging Face transformer models
-* **LLM is fully configurable**
-
-  * Model can be changed via configuration
-  * Supports API-based or locally hosted LLMs
-* Designed for extensibility and experimentation
+* **Language:** Python 3.11+
+* **User Interface:** Streamlit, Pandas
+* **LLM & AI Orchestration:** LangChain, Groq Cloud API (`llama-3.1-8b-instant`)
+* **Static Code Analysis:** Python `ast` (Abstract Syntax Tree), `pydocstyle` (PEP 257), `radon`
+* **Test Suite:** PyTest (28 automated unit tests with 100% pass rate)
 
 ---
 
 ## 📂 Project Structure
 
-```
+```text
 Project-AI-Powered-Code-Reviewer/
 │
-├── core/
-│   ├── reviewer.py
-│   ├── prompt_templates.py
+├── main_app.py                     # Streamlit Web Application & Orchestrator
 │
-├── utils/
-│   ├── file_loader.py
-│   ├── formatter.py
+├── core/                           # Core Engine Modules
+│   ├── parser/
+│   │   └── python_parser.py        # AST Code Analyzer (Functions, Classes, Methods)
+│   ├── docstring_engine/
+│   │   ├── generator.py            # Google / NumPy / reST Style Formatter
+│   │   ├── llm_integration.py      # Groq Llama 3.1 LLM Integration
+│   │   └── apply_docstring.py      # In-Place Code Insertion Engine
+│   ├── reporter/
+│   │   └── coverage_reporter.py    # Coverage Calculator & Report Generator
+│   └── validator/
+│       └── validator.py            # PEP 257 Validator & Cyclomatic Complexity
 │
 ├── storage/
-│   └── reports/
-│       └── pytest_results.json
+│   ├── reports/                    # Persisted JSON coverage and pytest reports
+│   └── uploads/                    # Working directory for uploaded Python files
 │
-├── tests/
-│   └── test_reviewer.py
+├── tests/                          # Automated PyTest Test Suite (28 Tests)
+│   ├── test_parser.py              # AST parser validation
+│   ├── test_generotor.py           # Style formatter tests
+│   ├── test_llm_integration.py     # Prompt & LLM fallback tests
+│   ├── test_coverage_repoter.py    # Coverage mathematical calculations
+│   ├── test_validation.py          # PEP 257 & complexity tests
+│   └── test_dashboard.py           # Data processing tests
 │
-├── main.py
-├── requirements.txt
-├── README.md
-└── LICENSE
+├── .env.example                    # Sample environment configuration template
+├── .gitignore                      # Git tracking exclusion rules (protects API keys)
+├── requirements.txt                # Production Python dependencies
+├── pyproject.toml                  # Project & PyTest configuration
+├── LICENSE                         # MIT License
+└── README.md                       # Project documentation
 ```
 
 ---
 
-## ⚙️ Installation Steps
+## ⚙️ Installation & Local Setup
 
-1. **Clone the repository**
-
-   ```
-   git clone https://github.com/Pavithra-hub006/Project-AI-Powered-Code-Reviewer.git
-   ```
-
-2. **Navigate to the project directory**
-
-   ```
-   cd Project-AI-Powered-Code-Reviewer
-   ```
-
-3. **Create a virtual environment (recommended)**
-
-   ```
-   python -m venv venv
-   ```
-
-4. **Activate the virtual environment**
-
-   * Windows:
-
-     ```
-     venv\Scripts\activate
-     ```
-   * Linux / macOS:
-
-     ```
-     source venv/bin/activate
-     ```
-
-5. **Install required dependencies**
-
-   ```
-   pip install -r requirements.txt
-   ```
-
----
-
-## ▶️ How to Run the Project Locally
-
-1. Ensure all dependencies are installed
-
-2. Configure the LLM API key (if required)
-
-   ```
-   export LLM_API_KEY=your_api_key
-   ```
-
-   or set it directly inside the configuration file
-
-3. Run the application
-
-   ```
-   python main.py
-   ```
-
-4. Provide a source code file as input and receive AI-generated review output
-
----
-
-## 🧪 Running Tests
-
-To execute automated tests and generate reports:
-
+### 1. Clone the Repository
+```bash
+git clone https://github.com/Pavithra-hub006/Project-AI-Powered-Code-Reviewer.git
+cd Project-AI-Powered-Code-Reviewer
 ```
+
+### 2. Create and Activate Virtual Environment
+* **Windows (PowerShell):**
+  ```powershell
+  python -m venv venv
+  .\venv\Scripts\Activate.ps1
+  ```
+* **Linux / macOS:**
+  ```bash
+  python3 -m venv venv
+  source venv/bin/activate
+  ```
+
+### 3. Install Dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Configure API Key
+Create a `.env` file in the project root:
+```bash
+cp .env.example .env
+```
+Add your free Groq API key from [Groq Console](https://console.groq.com):
+```env
+GROQ_API_KEY="gsk_your_api_key_here"
+```
+
+---
+
+## ▶️ Running the Application
+
+Launch the Streamlit dashboard locally:
+```bash
+streamlit run main_app.py
+```
+The app will open automatically in your browser at `http://localhost:8501`.
+
+---
+
+## ☁️ Deployment on Streamlit Community Cloud
+
+1. Push your repository to GitHub.
+2. Sign in to **[share.streamlit.io](https://share.streamlit.io)**.
+3. Click **"New app"** and select:
+   * **Repository:** `Pavithra-hub006/Project-AI-Powered-Code-Reviewer`
+   * **Branch:** `main`
+   * **Main file path:** `main_app.py`
+4. In **Advanced Settings → Secrets**, add your Groq key:
+   ```toml
+   GROQ_API_KEY = "gsk_your_api_key_here"
+   ```
+5. Click **Deploy!**
+
+---
+
+## 🧪 Running Automated Tests
+
+To execute the full test suite (28 tests):
+```bash
 pytest
 ```
 
-For JSON test reports:
-
-```
+To run tests with a generated JSON report:
+```bash
 pytest --json-report --json-report-file=storage/reports/pytest_results.json
 ```
 
+---
+
 ## 📜 License
 
-This project is licensed under the **MIT License**.
-You are free to use, modify, and distribute this project with proper attribution.
-
-
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
